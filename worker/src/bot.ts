@@ -70,11 +70,13 @@ export async function sendDocumentToChannel(
   const form = new FormData();
   form.append('chat_id', env.STORAGE_CHANNEL_ID);
 
+  const blobSize = blob instanceof Blob ? blob.size : blob.byteLength;
+
   const file = new File([blob], fileName, { type: mimeType });
   form.append('document', file);
 
   const res = await tgFetch(env.TG_BOT_TOKEN, 'sendDocument', form);
-  const data: TgSendResponse = await res.json();
+  const data: TgSendResponse = await res.json() as TgSendResponse;
 
   if (!data.ok || !data.result?.document) {
     throw new Error(`Bot API sendDocument failed: ${data.description || 'unknown'}`);
@@ -83,7 +85,7 @@ export async function sendDocumentToChannel(
   return {
     file_id: data.result.document.file_id,
     file_unique_id: data.result.document.file_unique_id,
-    size: data.result.document.file_size ?? blob.size,
+    size: data.result.document.file_size ?? blobSize,
     part_index: 0,
   };
 }
@@ -173,7 +175,7 @@ export async function verifyBotConnection(env: Env): Promise<{ ok: boolean; mess
   try {
     // Test bot token
     const meRes = await tgFetch(env.TG_BOT_TOKEN, 'getMe');
-    const meData = await meRes.json();
+    const meData: any = await meRes.json();
     if (!meData.ok) {
       return { ok: false, message: `Invalid bot token: ${meData.description}` };
     }
@@ -184,7 +186,7 @@ export async function verifyBotConnection(env: Env): Promise<{ ok: boolean; mess
       text: '✅ TG Cloud Drive Worker is online',
       disable_notification: true,
     });
-    const chatData = await chatRes.json();
+    const chatData: any = await chatRes.json();
     if (!chatData.ok) {
       return { ok: false, message: `Cannot access channel: ${chatData.description}` };
     }
