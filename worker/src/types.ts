@@ -38,6 +38,7 @@ export interface ChunkInfo {
   file_unique_id: string;
   size: number;
   part_index: number;
+  message_id?: number;  // Telegram message ID for deleteMessage
 }
 
 export interface ShareRow {

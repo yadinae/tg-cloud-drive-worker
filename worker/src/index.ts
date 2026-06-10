@@ -10,6 +10,7 @@ import {
   getFile,
   renameFile,
   deleteFile as deleteFileMeta,
+  getAndDeleteFile,
   searchFiles,
   getStats,
 } from './metadata';
@@ -23,7 +24,7 @@ import {
   updateShare,
   deleteShare,
 } from './shares';
-import { verifyBotConnection } from './bot';
+import { verifyBotConnection, deleteFileMessages } from './bot';
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
 
 // ───── Auto-migrate D1 on cold start ─────
@@ -298,7 +299,7 @@ app.post('/api/files/upload-chunk', async (c) => {
 
   const buffer = await fileEntry.arrayBuffer();
   const result = await receiveUploadChunk(c.env, uploadId, chunkIndex, totalChunks, fileName, fileSize, mimeType, topicId, buffer);
-  return c.json({ ok: true, ...result });
+  return c.json({ ...result, chunkIndex });
 });
 
 // ───── Chunked Upload: finalize all chunks ─────
@@ -311,11 +312,21 @@ app.post('/api/files/finalize', async (c) => {
   return c.json({ ok: true, ...result }, 201);
 });
 
-// DELETE /api/files/:id — delete file
+// DELETE /api/files/:id — delete file (D1 + Telegram messages)
 app.delete('/api/files/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const ok = await deleteFileMeta(c.env, id);
-  return c.json({ ok });
+  const file = await getAndDeleteFile(c.env, id);
+  if (!file) return c.json({ ok: false, error: 'File not found' }, 404);
+
+  // Delete Telegram messages for each chunk
+  let deleted = 0;
+  try {
+    deleted = await deleteFileMessages(c.env, file.manifest);
+  } catch (err: any) {
+    console.error('Telegram message deletion error:', err);
+  }
+
+  return c.json({ ok: true, telegramMessagesDeleted: deleted });
 });
 
 // ───── File Download ─────

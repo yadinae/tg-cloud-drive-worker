@@ -118,6 +118,17 @@ export async function deleteFile(env: Env, fileId: number): Promise<boolean> {
   return result.success;
 }
 
+/**
+ * Get file by id, then delete it. Returns the file data (including manifest)
+ * before deletion, so caller can clean up Telegram messages.
+ */
+export async function getAndDeleteFile(env: Env, fileId: number): Promise<FileRow | null> {
+  const file = await getFile(env, fileId);
+  if (!file) return null;
+  await deleteFile(env, fileId);
+  return file;
+}
+
 // ───── Search ─────
 
 export async function searchFiles(env: Env, query: string): Promise<FileResponse[]> {

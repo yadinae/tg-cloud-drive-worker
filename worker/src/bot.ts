@@ -178,6 +178,35 @@ export async function getTelegramFilePath(
 export const uploadChunkToChannel = sendDocumentToChannel;
 
 /**
+ * Delete file messages from the Telegram channel.
+ * Parses the manifest to find each chunk's message_id and calls deleteMessage.
+ */
+export async function deleteFileMessages(env: Env, manifestStr: string, chatId?: string): Promise<number> {
+  const channelId = chatId || env.STORAGE_CHANNEL_ID;
+  let deleted = 0;
+  try {
+    const chunks = JSON.parse(manifestStr);
+    for (const chunk of chunks) {
+      if (chunk.message_id) {
+        try {
+          const res = await tgFetch(env.TG_BOT_TOKEN, 'deleteMessage', {
+            chat_id: channelId,
+            message_id: chunk.message_id,
+          });
+          const data: any = await res.json();
+          if (data.ok) deleted++;
+        } catch (err) {
+          console.error(`Failed to delete message ${chunk.message_id}:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to parse manifest for deletion:', err);
+  }
+  return deleted;
+}
+
+/**
  * Verify the bot token and channel access on startup.
  */
 export async function verifyBotConnection(env: Env): Promise<{ ok: boolean; message: string }> {
