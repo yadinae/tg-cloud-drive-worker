@@ -1,5 +1,5 @@
 // HTTP API client — replaces GramJS client
-const API_BASE = import.meta.env.VITE_API_BASE || '';
+const API_BASE = 'https://tg-cloud-drive-worker.yadinae.workers.dev';
 
 function getToken(): string | null {
   return localStorage.getItem('tgcd_auth_token');
@@ -47,7 +47,10 @@ export const uploadFile = (folderId: number, file: File) => {
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 
-export const getDlUrl = (id: number) => `${API_BASE}/api/files/${id}/download`;
+export const getDlUrl = (id: number) => {
+  const token = getToken();
+  return `${API_BASE}/api/files/${id}/download?token=${token}`;
+};
 
 export const createShare = (p: { fileId: number; password?: string; expiresIn?: number }) => req<{ ok: boolean; code: string; url: string }>('/api/shares', { method: 'POST', body: JSON.stringify(p) });
 export const fetchShares = (fileId: number) => req<{ shares: any[] }>(`/api/shares?fileId=${fileId}`);

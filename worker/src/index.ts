@@ -36,11 +36,17 @@ app.use('*', cors({
 
 // ───── Auth middleware ─────
 async function authMiddleware(c: any, next: any) {
+  // Support both Authorization header and ?token= query parameter
+  let token = '';
   const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7);
+  } else {
+    token = c.req.query('token') || '';
+  }
+  if (!token) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401);
   }
-  const token = authHeader.slice(7);
   if (token !== c.env.DRIVE_AUTH_TOKEN) {
     return c.json({ error: 'Invalid auth token' }, 403);
   }
@@ -244,6 +250,70 @@ app.delete('/api/shares/:code', async (c) => {
   const code = c.req.param('code');
   const ok = await deleteShare(c.env, code);
   return c.json({ ok });
+});
+
+// ───── Admin: Check storage channel info ─────
+app.get('/api/admin/info', async (c) => {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/getChat?chat_id=${c.env.STORAGE_CHANNEL_ID}`);
+    const data: any = await res.json();
+    if (!data.ok) {
+      return c.json({ error: `getChat failed: ${data.description}` }, 400);
+    }
+    return c.json({
+      ok: true,
+      chat: {
+        id: data.result.id,
+        type: data.result.type,
+        title: data.result.title || data.result.username,
+      }
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ───── Admin: Scan channel for existing documents ─────
+app.post('/api/admin/scan', async (c) => {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/getUpdates?timeout=5`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowed_updates: ['message'], limit: 50 })
+    });
+    const data: any = await res.json();
+    if (!data.ok) {
+      return c.json({ error: `getUpdates failed: ${data.description}` }, 400);
+    }
+    const updates = data.result || [];
+    const documents: any[] = [];
+    for (const update of updates) {
+      const msg = update.message || update.channel_post;
+      if (msg && msg.document) {
+        const chatId = String(msg.chat.id);
+        if (chatId === String(c.env.STORAGE_CHANNEL_ID) || chatId.replace('-100','') === String(c.env.STORAGE_CHANNEL_ID).replace('-100','')) {
+          documents.push({
+            messageId: msg.message_id,
+            fileName: msg.document.file_name || 'unknown',
+            fileSize: msg.document.file_size || 0,
+            mimeType: msg.document.mime_type || 'application/octet-stream',
+            fileId: msg.document.file_id,
+            fileUniqueId: msg.document.file_unique_id,
+            date: new Date(msg.date * 1000).toISOString(),
+          });
+        }
+      }
+    }
+    return c.json({
+      ok: true,
+      updateCount: updates.length,
+      foundDocuments: documents.length,
+      documents,
+      note: 'Only bot-visible messages (sent after bot joined). For full history, use import.',
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 // ───── Public: Share Download ─────
