@@ -39,10 +39,27 @@ export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topic
 
 export const fetchFiles = (topicId: number) => req<{ files: any[] }>(`/api/files?topicId=${topicId}`);
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
-export const uploadFile = (topicId: number, file: File) => {
-  const fd = new FormData();
-  fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
-  return req<{ ok: boolean; fileId: number }>('/api/files/upload', { method: 'POST', body: fd });
+export const uploadFile = (topicId: number, file: File, onProgress?: (pct: number) => void) => {
+  return new Promise<{ ok: boolean; fileId: number }>((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/api/files/upload`);
+    const token = getToken();
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
+        else reject(new Error(data.error || `HTTP ${xhr.status}`));
+      } catch { reject(new Error('Invalid response')); }
+    };
+    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.send(fd);
+  });
 };
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });

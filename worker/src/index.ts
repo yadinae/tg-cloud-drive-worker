@@ -331,11 +331,12 @@ app.post('/api/admin/sync-topics', async (c) => {
   try {
     const token = c.env.TG_BOT_TOKEN;
     const chatId = c.env.STORAGE_CHANNEL_ID;
+    const from = Number(c.req.query('from')) || 1;
+    const to = Math.min(from + 25, 100); // Probe 25 IDs at a time
     const discovered: { topicId: number; name: string }[] = [];
+    const toDelete: number[] = [];
 
-    // Probe topic IDs from 1 to 15 (stay under Worker subrequest limit)
-    for (let tid = 1; tid <= 15; tid++) {
-      // Try to get topic name by sending a test message
+    for (let tid = from; tid <= to; tid++) {
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -349,33 +350,24 @@ app.post('/api/admin/sync-topics', async (c) => {
       });
       const data: any = await res.json();
       if (data.ok) {
-        const msgId = data.result?.message_id;
-        // Get topic info from the forwarded message
-        const topicName = data.result?.is_topic_message
-          ? `Topic ${tid}`  // We can't get the name from the response
-          : 'General';
-
-        discovered.push({ topicId: tid, name: topicName });
-
-        // Delete the test message
-        if (msgId) {
-          await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, message_id: msgId })
-          });
-        }
-      } else {
-        // If 400 error about topic not found, stop probing
-        if (data.description?.includes('message thread not found')) {
-          continue; // Skip, but keep trying higher IDs
-        }
-        // Other errors might mean we're rate limited
-        if (data.error_code === 429) {
-          await new Promise(r => setTimeout(r, 1000));
-          continue;
+        discovered.push({ topicId: tid, name: tid === 1 ? 'General' : `Topic ${tid}` });
+        if (data.result?.message_id) {
+          toDelete.push(data.result.message_id);
         }
       }
+    }
+
+    // Batch delete test messages (only for discovered topics)
+    let deleted = 0;
+    for (const msgId of toDelete) {
+      try {
+        await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, message_id: msgId })
+        });
+        deleted++;
+      } catch { /* ignore */ }
     }
 
     // Store discovered topics in D1
@@ -390,29 +382,18 @@ app.post('/api/admin/sync-topics', async (c) => {
 
     return c.json({
       ok: true,
+      from, to,
       discovered: discovered.length,
       inserted,
-      topics: discovered,
-      note: 'Topic names are generic. Rename them in the UI to match your actual topic names.',
+      allTopics: discovered,
+      note: 'Topic names are generic. Rename them from the UI.',
     });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });
 
-// ───── Admin: Manually insert a known Telegram topic ─────
-app.post('/api/admin/insert-topic', async (c) => {
-  const { topicId, name } = await c.req.json();
-  if (!topicId || !name) return c.json({ error: 'topicId and name required' }, 400);
-  try {
-    await c.env.DB.prepare('INSERT OR IGNORE INTO topics (topic_id, name) VALUES (?, ?)').bind(topicId, name.trim()).run();
-    return c.json({ ok: true });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// ───── Admin ─────
+// ───── Admin: Get channel info ─────
 app.get('/api/admin/info', async (c) => {
   try {
     const res = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/getChat?chat_id=${c.env.STORAGE_CHANNEL_ID}`);
@@ -422,6 +403,20 @@ app.get('/api/admin/info', async (c) => {
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
+});
+
+// ───── Admin: Identify which topic is which ─────
+app.get('/api/admin/identify/:topicId', async (c) => {
+  const topicId = Number(c.req.param('topicId'));
+  const msg = `🆔 话题 ID ${topicId} — 你看到这个话题的名称是什么？告诉我后我会删掉这条消息`;
+  const res = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: c.env.STORAGE_CHANNEL_ID, message_thread_id: topicId, text: msg, disable_notification: true })
+  });
+  const data: any = await res.json();
+  if (!data.ok) return c.json({ error: data.description }, 500);
+  return c.json({ ok: true, message: `Sent ID card to topic ${topicId}` });
 });
 
 // ───── Public: Share Download ─────

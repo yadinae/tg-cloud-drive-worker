@@ -73,7 +73,8 @@ export async function sendDocumentToChannel(
   form.append('chat_id', env.STORAGE_CHANNEL_ID);
 
   // If sending to a specific topic, set the message_thread_id
-  if (topicId) {
+  // General topic (id=1) is the default — omit message_thread_id for it
+  if (topicId && topicId !== 1) {
     form.append('message_thread_id', String(topicId));
   }
 
