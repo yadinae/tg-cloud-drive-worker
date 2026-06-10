@@ -3,7 +3,7 @@ import { sendDocumentToChannel, streamFileFromTelegram, getTelegramFilePath } fr
 import { createFile, updateFileManifest, getFile } from './metadata';
 
 // ───── Constants ─────
-const CHUNK_SIZE = 48 * 1024 * 1024; // 48MB per chunk (under Bot API 50MB limit)
+const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — under Bot API 20MB download limit
 const UPLOAD_PREFIX = 'up:'; // KV prefix for in-progress chunked uploads
 
 /**
@@ -116,6 +116,17 @@ export async function downloadFileStream(
     console.warn('Range requests not yet supported for multi-chunk files');
   }
 
+  // Check if any chunk exceeds Bot API download limit (~20MB)
+  const tooBigChunk = manifest.find(c => c.size > 20 * 1024 * 1024);
+  if (tooBigChunk) {
+    return new Response(JSON.stringify({
+      error: `Chunk ${tooBigChunk.part_index} is ${(tooBigChunk.size / 1024 / 1024).toFixed(0)}MB, exceeding Bot API 20MB download limit. Re-upload the file with the updated client (18MB chunks).`
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
 
@@ -133,6 +144,10 @@ export async function downloadFileStream(
       }
     } catch (err: any) {
       console.error('Stream concatenation error:', err);
+      // Write error to stream so client sees something
+      try {
+        await writer.write(new TextEncoder().encode(JSON.stringify({ error: err.message || 'Download failed' })));
+      } catch {}
     } finally {
       await writer.close();
     }

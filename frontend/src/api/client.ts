@@ -1,6 +1,6 @@
 // HTTP API client — replaces GramJS client
 const API_BASE = '';
-const CHUNK_THRESHOLD = 45 * 1024 * 1024; // 45MB — uploads > this get chunked client-side
+const CHUNK_THRESHOLD = 18 * 1024 * 1024; // 18MB — uploads > this get chunked client-side
 
 function getToken(): string | null {
   return localStorage.getItem('tgcd_auth_token');
@@ -71,7 +71,7 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
   }
 
   // ─── Large files: chunked upload ───
-  const CHUNK_SIZE = 45 * 1024 * 1024;
+  const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — must be under Bot API 20MB download limit
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
   const uploadId = crypto.randomUUID();
 
