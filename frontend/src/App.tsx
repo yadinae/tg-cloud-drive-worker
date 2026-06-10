@@ -56,6 +56,7 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
   const [password, setPassword] = useState('');
   const [expiresIn, setExpiresIn] = useState(0);
   const [creating, setCreating] = useState(false);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     const r = await fetchShares(file.id);
@@ -116,7 +117,9 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
               </tr>
             </thead>
             <tbody>
-              {shares.map(s => (
+              {shares.map(s => {
+                const spw = showPasswords[s.code] || false;
+                return (
                 <tr key={s.code} style={{ borderBottom: '1px solid #1e293b' }}>
                   <td style={{ padding: '.5rem' }}>
                     <a href={s.expiresAt && Date.now() > s.expiresAt ? '#' : `/dl/${s.code}`} target="_blank" style={{ color: '#38bdf8', textDecoration: 'none' }}>
@@ -124,13 +127,24 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
                     </a>
                     {s.expiresAt && Date.now() > s.expiresAt && <span style={{ color: '#f87171', marginLeft: '.5rem', fontSize: '.75rem' }}>expired</span>}
                   </td>
-                  <td style={{ padding: '.5rem' }}>{s.hasPassword ? '🔒' : '—'}</td>
+                  <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
+                    {s.hasPassword ? (
+                      <>
+                        <span>{spw && s.password ? s.password : '🔒'}</span>
+                        <button onClick={() => setShowPasswords({...showPasswords, [s.code]: !spw})}
+                          style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0 }}>
+                          {spw ? '🙈' : '👁️'}
+                        </button>
+                      </>
+                    ) : <span>—</span>}
+                  </td>
                   <td style={{ textAlign: 'center', padding: '.5rem', color: '#94a3b8' }}>{s.downloadCount}</td>
                   <td style={{ textAlign: 'right', padding: '.5rem' }}>
                     <button onClick={() => handleDelete(s.code)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '.875rem' }}>Delete</button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -576,24 +590,22 @@ function Dashboard() {
                           </button>
                         </div>
 
-                        {/* Password — FIXED: now shows actual text on eye click */}
+                        {/* Password — shows eye toggle even for legacy shares */}
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
-                          {share.hasPassword && share.password ? (
+                          {share.hasPassword ? (
                             <>
                               <span style={{
                                 maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis',
                                 fontSize: showPw ? '.75rem' : '.8rem', fontFamily: showPw ? 'monospace' : 'inherit',
                                 color: '#e2e8f0',
                               }}>
-                                {showPw ? share.password : '🔒'}
+                                {showPw && share.password ? share.password : '🔒'}
                               </span>
                               <button onClick={() => setShowPasswords({ ...showPasswords, [share.code]: !showPw })}
                                 style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0, lineHeight: 1 }}>
                                 {showPw ? '🙈' : '👁️'}
                               </button>
                             </>
-                          ) : share.hasPassword ? (
-                            <span style={{ color: '#94a3b8', fontSize: '.75rem' }}>🔒</span>
                           ) : (
                             <span style={{ color: '#64748b' }}>—</span>
                           )}

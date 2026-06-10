@@ -1,5 +1,6 @@
 // HTTP API client — replaces GramJS client
 const API_BASE = '';
+const CHUNK_THRESHOLD = 45 * 1024 * 1024; // 45MB — uploads > this get chunked client-side
 
 function getToken(): string | null {
   return localStorage.getItem('tgcd_auth_token');
@@ -39,28 +40,88 @@ export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topic
 
 export const fetchFiles = (topicId: number) => req<{ files: any[] }>(`/api/files?topicId=${topicId}`);
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
-export const uploadFile = (topicId: number, file: File, onProgress?: (pct: number) => void) => {
-  return new Promise<{ ok: boolean; fileId: number }>((resolve, reject) => {
-    const fd = new FormData();
-    fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/api/files/upload`);
-    const token = getToken();
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      try {
-        const data = JSON.parse(xhr.responseText);
-        if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
-        else reject(new Error(data.error || `HTTP ${xhr.status}`));
-      } catch { reject(new Error('Invalid response')); }
-    };
-    xhr.onerror = () => reject(new Error('Network error'));
-    xhr.send(fd);
-  });
-};
+
+/**
+ * Upload a file to a topic. Files >45MB are split into chunks client-side.
+ */
+export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void): Promise<{ ok: boolean; fileId: number }> {
+  const token = getToken();
+
+  // ─── Small files: single upload with XHR progress ───
+  if (file.size <= CHUNK_THRESHOLD) {
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/api/files/upload`);
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
+          else reject(new Error(data.error || `HTTP ${xhr.status}`));
+        } catch { reject(new Error('Invalid response')); }
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(fd);
+    });
+  }
+
+  // ─── Large files: chunked upload ───
+  const CHUNK_SIZE = 45 * 1024 * 1024;
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const uploadId = crypto.randomUUID();
+
+  async function run() {
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+      const fd = new FormData();
+      fd.append('file', chunk, `chunk_${i}`);
+      fd.append('uploadId', uploadId);
+      fd.append('chunkIndex', String(i));
+      fd.append('totalChunks', String(totalChunks));
+      fd.append('topicId', String(topicId));
+      fd.append('fileName', file.name);
+      fd.append('fileSize', String(file.size));
+      fd.append('mimeType', file.type);
+
+      await new Promise<void>((resolveChunk, rejectChunk) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_BASE}/api/files/upload-chunk`);
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && onProgress) {
+            const chunkPct = e.loaded / e.total;
+            const overall = Math.round(((i + chunkPct) / totalChunks) * 100);
+            onProgress(overall);
+          }
+        };
+        xhr.onload = () => {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolveChunk();
+            else rejectChunk(new Error(data.error || `HTTP ${xhr.status}`));
+          } catch { rejectChunk(new Error('Invalid response')); }
+        };
+        xhr.onerror = () => rejectChunk(new Error('Network error'));
+        xhr.send(fd);
+      });
+    }
+    // Finalize
+    return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
+      method: 'POST',
+      body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks }),
+    });
+  }
+
+  return run();
+}
+
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 

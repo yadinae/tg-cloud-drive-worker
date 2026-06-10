@@ -1,9 +1,10 @@
 import type { Env, ChunkInfo, UploadProgress } from './types';
-import { uploadChunkToChannel, streamFileFromTelegram, getTelegramFilePath } from './bot';
+import { sendDocumentToChannel, streamFileFromTelegram, getTelegramFilePath } from './bot';
 import { createFile, updateFileManifest, getFile } from './metadata';
 
 // ───── Constants ─────
-const CHUNK_SIZE = 48 * 1024 * 1024;
+const CHUNK_SIZE = 48 * 1024 * 1024; // 48MB per chunk (under Bot API 50MB limit)
+const UPLOAD_PREFIX = 'up:'; // KV prefix for in-progress chunked uploads
 
 /**
  * Upload a complete file to a specific topic (forum thread) in Telegram.
@@ -41,7 +42,7 @@ export async function uploadCompleteFile(
     while (!success && attempts < 3) {
       try {
         // Send to the specific topic using message_thread_id
-        const chunkInfo = await uploadChunkToChannel(env, chunkData, chunkFileName, 'application/octet-stream', topicId);
+        const chunkInfo = await sendDocumentToChannel(env, chunkData, chunkFileName, 'application/octet-stream', topicId);
         chunks.push({ ...chunkInfo, part_index: i });
         success = true;
       } catch (err: any) {
@@ -162,4 +163,94 @@ export async function getShareDownloadUrl(env: Env, fileId: number): Promise<str
     }
   }
   return null;
+}
+
+// ─────────────────────────────────────────────
+// Frontend chunked upload API
+// ─────────────────────────────────────────────
+
+/**
+ * Receive a single chunk from the frontend, send to Bot API,
+ * store result in KV for later finalization.
+ */
+export async function receiveUploadChunk(
+  env: Env,
+  uploadId: string,
+  chunkIndex: number,
+  totalChunks: number,
+  fileName: string,
+  fileSize: number,
+  mimeType: string,
+  topicId: number,
+  chunkBuffer: ArrayBuffer,
+): Promise<{ ok: boolean; chunkIndex: number }> {
+  const chunkFileName = totalChunks > 1 ? `${fileName}.part${String(chunkIndex).padStart(4, '0')}` : fileName;
+
+  try {
+    const chunkInfo = await sendDocumentToChannel(env, chunkBuffer, chunkFileName, 'application/octet-stream', topicId);
+
+    // Store chunk info in KV
+    const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${chunkIndex}`;
+    await env.SHARES.put(chunkKey, JSON.stringify({
+      file_id: chunkInfo.file_id,
+      file_unique_id: chunkInfo.file_unique_id,
+      size: chunkBuffer.byteLength,
+      part_index: chunkIndex,
+      message_id: chunkInfo.message_id,
+    }), { expirationTtl: 86400 }); // 24h TTL
+
+    return { ok: true, chunkIndex };
+  } catch (err: any) {
+    throw new Error(`Chunk ${chunkIndex} upload failed: ${err.message}`);
+  }
+}
+
+/**
+ * Finalize a multi-chunk upload: read all chunk info from KV,
+ * create the D1 file record with the complete manifest.
+ */
+export async function finalizeChunkedUpload(
+  env: Env,
+  uploadId: string,
+  topicId: number,
+  fileName: string,
+  fileSize: number,
+  mimeType: string,
+  totalChunks: number,
+): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
+  const chunks: ChunkInfo[] = [];
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${i}`;
+    const raw = await env.SHARES.get(chunkKey);
+    if (!raw) {
+      throw new Error(`Missing chunk ${i}/${totalChunks} for upload ${uploadId}`);
+    }
+    const info = JSON.parse(raw);
+    chunks.push({
+      file_id: info.file_id,
+      file_unique_id: info.file_unique_id,
+      size: info.size,
+      part_index: i,
+      message_id: info.message_id,
+    });
+
+    // Clean up KV entry
+    await env.SHARES.delete(chunkKey);
+  }
+
+  // Clean up upload metadata (if any)
+  await env.SHARES.delete(`${UPLOAD_PREFIX}${uploadId}:meta`).catch(() => {});
+
+  const manifestJson = JSON.stringify(chunks);
+  const effectiveMimeType = mimeType || 'application/octet-stream';
+  const firstChunk = chunks[0];
+
+  const fileRecord = await createFile(
+    env, topicId, fileName, fileSize, effectiveMimeType,
+    manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
+    firstChunk.message_id,
+  );
+
+  return { fileId: fileRecord.id, manifest: chunks };
 }

@@ -13,7 +13,7 @@ import {
   searchFiles,
   getStats,
 } from './metadata';
-import { uploadCompleteFile, downloadFileStream } from './storage';
+import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload } from './storage';
 import {
   createShare,
   getShare,
@@ -278,6 +278,37 @@ app.put('/api/files/:id', async (c) => {
   if (!name || !name.trim()) return c.json({ error: 'File name is required' }, 400);
   const ok = await renameFile(c.env, id, name.trim());
   return c.json({ ok });
+});
+
+// ───── Chunked Upload: receive individual chunk ─────
+app.post('/api/files/upload-chunk', async (c) => {
+  const formData = await c.req.formData();
+  const fileEntry = formData.get('file') as File | null;
+  const uploadId = formData.get('uploadId') as string;
+  const chunkIndex = Number(formData.get('chunkIndex'));
+  const totalChunks = Number(formData.get('totalChunks'));
+  const topicId = Number(formData.get('topicId'));
+  const fileName = formData.get('fileName') as string;
+  const fileSize = Number(formData.get('fileSize'));
+  const mimeType = formData.get('mimeType') as string || 'application/octet-stream';
+
+  if (!fileEntry || !uploadId || !topicId) {
+    return c.json({ error: 'file, uploadId, and topicId are required' }, 400);
+  }
+
+  const buffer = await fileEntry.arrayBuffer();
+  const result = await receiveUploadChunk(c.env, uploadId, chunkIndex, totalChunks, fileName, fileSize, mimeType, topicId, buffer);
+  return c.json({ ok: true, ...result });
+});
+
+// ───── Chunked Upload: finalize all chunks ─────
+app.post('/api/files/finalize', async (c) => {
+  const { uploadId, topicId, name, size, mimeType, totalChunks } = await c.req.json();
+  if (!uploadId || !topicId || !name) {
+    return c.json({ error: 'uploadId, topicId, and name are required' }, 400);
+  }
+  const result = await finalizeChunkedUpload(c.env, uploadId, topicId, name, size || 0, mimeType || 'application/octet-stream', totalChunks || 1);
+  return c.json({ ok: true, ...result }, 201);
 });
 
 // DELETE /api/files/:id — delete file
