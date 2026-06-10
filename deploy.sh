@@ -4,30 +4,34 @@ set -euo pipefail
 echo "☁️ TG Cloud Drive Worker — Deploy"
 echo "================================="
 
+# 1. Build frontend
+echo "📦 Building frontend..."
+cd "$(dirname "$0")/frontend"
+NODE_OPTIONS="--max-old-space-size=512" npm run build 2>&1 | tail -3
+
+# 2. Embed frontend assets into Worker
+echo "🔗 Embedding frontend assets into Worker..."
 cd "$(dirname "$0")/worker"
+node -e "
+const fs = require('fs');
+const html = fs.readFileSync('../frontend/dist/index.html', 'utf-8');
+const assetsDir = fs.readdirSync('../frontend/dist/assets');
+let mainJs = '', mainJsName = '';
+for (const f of assetsDir) { if (f.endsWith('.js')) { mainJs = fs.readFileSync('../frontend/dist/assets/'+f,'utf-8'); mainJsName = f; break; } }
+fs.writeFileSync('src/frontend-assets.ts', '// Auto-generated — do not edit manually\n' +
+  'export const FRONTEND_HTML = ' + JSON.stringify(html) + ';\n' +
+  'export const FRONTEND_JS_NAME = ' + JSON.stringify(mainJsName) + ';\n' +
+  'export const FRONTEND_JS_CONTENT = ' + JSON.stringify(mainJs) + ';\n');
+console.log('✅ Frontend embedded: HTML=' + html.length + ' JS=' + mainJs.length);
+"
 
+# 3. Install worker deps
 echo "📦 Installing worker dependencies..."
-npm install
+npm install --silent
 
-echo "🗄️  Creating D1 database if needed..."
-if ! npx wrangler d1 list 2>/dev/null | grep -q tgcd-meta; then
-  D1_OUTPUT=$(npx wrangler d1 create tgcd-meta 2>&1)
-  echo "$D1_OUTPUT"
-  D1_ID=$(echo "$D1_OUTPUT" | grep -oP 'database_id = "\K[^"]+' || true)
-  if [ -n "$D1_ID" ]; then
-    sed -i "s/database_id = \"\"/database_id = \"$D1_ID\"/" wrangler.toml
-    echo "✅ D1 database ID set"
-  fi
-fi
-
-echo "📋 Initializing D1 schema..."
-npx wrangler d1 execute tgcd-meta --file=schema.sql --remote 2>/dev/null || true
-
-echo "🔑 Checking secrets..."
-for s in TG_BOT_TOKEN STORAGE_CHANNEL_ID DRIVE_AUTH_TOKEN; do
-  npx wrangler secret list 2>/dev/null | grep -q "$s" && echo "  ✅ $s" || echo "  ⚠️  $s NOT set"
-done
-
-echo "🚀 Deploying..."
+# 4. Deploy Worker (which now serves both API and frontend)
+echo "🚀 Deploying Worker..."
 npx wrangler deploy
-echo "✅ Done!"
+
+echo ""
+echo "✅ Done! Visit: https://tg-cloud-drive-worker.yadinae.workers.dev"

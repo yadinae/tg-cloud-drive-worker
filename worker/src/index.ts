@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { jwt } from 'hono/jwt';
-import type { Env, UploadProgress } from './types';
+import type { Env } from './types';
 import {
   listFolders,
   createFolder,
@@ -23,6 +22,7 @@ import {
   deleteShare,
 } from './shares';
 import { verifyBotConnection } from './bot';
+import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -53,39 +53,20 @@ async function authMiddleware(c: any, next: any) {
   await next();
 }
 
-// ───── Static: Serve frontend build files ─────
-// (Frontend is deployed to Cloudflare Pages separately,
-//  but the Worker can also serve a simple status page)
+// ───── Static: Serve frontend SPA ─────
 app.get('/', (c) => {
-  return c.html(`<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TG Cloud Drive Worker</title>
-  <style>
-    body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-    .card{background:#1e293b;border-radius:12px;padding:2rem;max-width:480px;text-align:center}
-    h1{color:#38bdf8;margin:0 0 .5rem}
-    p{color:#94a3b8;margin:.5rem 0}
-    .status{display:inline-block;margin-top:1rem;padding:.5rem 1rem;border-radius:8px;background:#334155;color:#e2e8f0}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>☁️ TG Cloud Drive Worker</h1>
-    <p>Telegram Bot API based storage — running on Cloudflare Workers</p>
-    <div class="status" id="status">Checking API status...</div>
-  </div>
-  <script>
-    fetch('/api/health').then(r=>r.json()).then(d=>{
-      document.getElementById('status').textContent = d.ok ? '✅ ' + d.message : '❌ ' + d.message;
-    }).catch(()=>{
-      document.getElementById('status').textContent = '❌ API not reachable';
-    });
-  </script>
-</body>
-</html>`);
+  return c.html(FRONTEND_HTML);
+});
+
+// ───── Static: JS/CSS assets ─────
+app.get('/assets/*', (c) => {
+  const path = c.req.path;
+  if (path.endsWith('.js')) {
+    c.header('Content-Type', 'application/javascript; charset=utf-8');
+    c.header('Cache-Control', 'public, max-age=31536000, immutable');
+    return c.body(FRONTEND_JS_CONTENT);
+  }
+  return c.html(FRONTEND_HTML);
 });
 
 // ───── Health ─────
@@ -413,9 +394,15 @@ app.get('/dl/:code/raw', async (c) => {
   return downloadFileStream(c.env, share.fileId, c.req.header('Range'));
 });
 
-// ───── 404 ─────
+// ───── 404 — SPA fallback for non-API routes ─────
 app.notFound((c) => {
-  return c.json({ error: 'Not found' }, 404);
+  const path = c.req.path;
+  // API and dl routes get JSON 404
+  if (path.startsWith('/api/') || path.startsWith('/dl/')) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+  // Everything else gets the SPA
+  return c.html(FRONTEND_HTML);
 });
 
 // ───── Error handler ─────
