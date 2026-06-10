@@ -129,13 +129,17 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
                   </td>
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
                     {s.hasPassword ? (
-                      <>
-                        <span>{spw && s.password ? s.password : '🔒'}</span>
-                        <button onClick={() => setShowPasswords({...showPasswords, [s.code]: !spw})}
-                          style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0 }}>
-                          {spw ? '🙈' : '👁️'}
-                        </button>
-                      </>
+                      s.password ? (
+                        <>
+                          <span>{spw ? s.password : '🔒'}</span>
+                          <button onClick={() => setShowPasswords({...showPasswords, [s.code]: !spw})}
+                            style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0 }}>
+                            {spw ? '🙈' : '👁️'}
+                          </button>
+                        </>
+                      ) : (
+                        <span title="Password set but cannot be displayed (legacy share)">🔒</span>
+                      )
                     ) : <span>—</span>}
                   </td>
                   <td style={{ textAlign: 'center', padding: '.5rem', color: '#94a3b8' }}>{s.downloadCount}</td>
@@ -590,22 +594,26 @@ function Dashboard() {
                           </button>
                         </div>
 
-                        {/* Password — shows eye toggle even for legacy shares */}
+                        {/* Password — eye only when stored password available */}
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
-                            <>
-                              <span style={{
-                                maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis',
-                                fontSize: showPw ? '.75rem' : '.8rem', fontFamily: showPw ? 'monospace' : 'inherit',
-                                color: '#e2e8f0',
-                              }}>
-                                {showPw && share.password ? share.password : '🔒'}
-                              </span>
-                              <button onClick={() => setShowPasswords({ ...showPasswords, [share.code]: !showPw })}
-                                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0, lineHeight: 1 }}>
-                                {showPw ? '🙈' : '👁️'}
-                              </button>
-                            </>
+                            share.password ? (
+                              <>
+                                <span style={{
+                                  maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis',
+                                  fontSize: showPw ? '.75rem' : '.8rem', fontFamily: showPw ? 'monospace' : 'inherit',
+                                  color: '#e2e8f0',
+                                }}>
+                                  {showPw ? share.password : '🔒'}
+                                </span>
+                                <button onClick={() => setShowPasswords({ ...showPasswords, [share.code]: !showPw })}
+                                  style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0, lineHeight: 1 }}>
+                                  {showPw ? '🙈' : '👁️'}
+                                </button>
+                              </>
+                            ) : (
+                              <span style={{ color: '#94a3b8', fontSize: '.75rem', cursor: 'help' }} title="Password set (legacy share)">🔒</span>
+                            )
                           ) : (
                             <span style={{ color: '#64748b' }}>—</span>
                           )}
