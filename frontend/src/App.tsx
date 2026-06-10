@@ -1,0 +1,369 @@
+import { useState, useEffect, useCallback } from 'react';
+import { isAuthed, login, logout, fetchStats, fetchFolders, createFolder, deleteFolder, renameFolder, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl } from './api/client';
+
+type View = 'login' | 'drive';
+
+interface Folder { id: number; name: string; parentId: number | null; createdAt: number; }
+interface DriveFile { id: number; folderId: number; name: string; size: number; mimeType: string; chunkCount: number; createdAt: number; }
+interface ShareLink { code: string; fileId: number; fileName: string; fileSize: number; hasPassword: boolean; expiresAt: number | null; downloadCount: number; createdAt: number; }
+
+function formatBytes(b: number): string {
+  if (!b || b <= 0) return '0 B';
+  const k = 1024, sizes = ['B','KB','MB','GB','TB'];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// ─── Login ───
+function Login({ onLogin }: { onLogin: () => void }) {
+  const [token, setToken] = useState('');
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true); setErr('');
+    const ok = await login(token);
+    setLoading(false);
+    if (ok) onLogin();
+    else setErr('Invalid auth token');
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a', color: '#e2e8f0' }}>
+      <form onSubmit={handleSubmit} style={{ background: '#1e293b', padding: '2rem', borderRadius: 12, width: '100%', maxWidth: 380 }}>
+        <h1 style={{ margin: '0 0 .5rem', color: '#38bdf8', fontSize: '1.5rem' }}>☁️ TG Cloud Drive</h1>
+        <p style={{ color: '#94a3b8', margin: '0 0 1.5rem', fontSize: '.875rem' }}>Enter your access token to continue</p>
+        <input
+          type="password" placeholder="Access Token" value={token}
+          onChange={e => setToken(e.target.value)}
+          style={{ width: '100%', padding: '.75rem', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }}
+        />
+        {err && <p style={{ color: '#f87171', fontSize: '.875rem', marginTop: '.5rem' }}>{err}</p>}
+        <button type="submit" disabled={loading || !token.trim()} style={{ width: '100%', marginTop: '1rem', padding: '.75rem', borderRadius: 8, border: 'none', background: '#38bdf8', color: '#0f172a', fontSize: '1rem', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? .7 : 1 }}>
+          {loading ? 'Verifying...' : 'Sign In'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ─── Share Manager Modal ───
+function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void }) {
+  const [shares, setShares] = useState<ShareLink[]>([]);
+  const [password, setPassword] = useState('');
+  const [expiresIn, setExpiresIn] = useState(0);
+  const [creating, setCreating] = useState(false);
+
+  const load = useCallback(async () => {
+    const r = await fetchShares(file.id);
+    setShares(r.shares);
+  }, [file.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    await createShare({ fileId: file.id, password: password || undefined, expiresIn: expiresIn || undefined });
+    setPassword(''); setExpiresIn(0);
+    await load();
+    setCreating(false);
+  };
+
+  const handleDelete = async (code: string) => {
+    await deleteShare(code);
+    await load();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h2 style={{ margin: 0, color: '#e2e8f0', fontSize: '1.125rem' }}>🔗 Share — {file.name}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+          <input type="password" placeholder="Password (optional)" value={password} onChange={e => setPassword(e.target.value)}
+            style={{ flex: 1, minWidth: 140, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem' }} />
+          <select value={expiresIn} onChange={e => setExpiresIn(Number(e.target.value))}
+            style={{ padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem' }}>
+            <option value={0}>No expiry</option>
+            <option value={3600}>1 hour</option>
+            <option value={21600}>6 hours</option>
+            <option value={86400}>24 hours</option>
+            <option value={259200}>3 days</option>
+            <option value={604800}>7 days</option>
+            <option value={2592000}>30 days</option>
+          </select>
+          <button onClick={handleCreate} disabled={creating} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer' }}>
+            {creating ? '...' : 'Create'}
+          </button>
+        </div>
+
+        {shares.length === 0 ? (
+          <p style={{ color: '#94a3b8', textAlign: 'center', padding: '2rem 0' }}>No share links yet</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.875rem' }}>
+            <thead>
+              <tr style={{ color: '#94a3b8', borderBottom: '1px solid #334155' }}>
+                <th style={{ textAlign: 'left', padding: '.5rem' }}>Link</th>
+                <th style={{ textAlign: 'left', padding: '.5rem' }}>Password</th>
+                <th style={{ textAlign: 'center', padding: '.5rem' }}>Downloads</th>
+                <th style={{ textAlign: 'right', padding: '.5rem' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shares.map(s => (
+                <tr key={s.code} style={{ borderBottom: '1px solid #1e293b' }}>
+                  <td style={{ padding: '.5rem' }}>
+                    <a href={s.expiresAt && Date.now() > s.expiresAt ? '#' : `/dl/${s.code}`} target="_blank" style={{ color: '#38bdf8', textDecoration: 'none' }}>
+                      {s.code}
+                    </a>
+                    {s.expiresAt && Date.now() > s.expiresAt && <span style={{ color: '#f87171', marginLeft: '.5rem', fontSize: '.75rem' }}>expired</span>}
+                  </td>
+                  <td style={{ padding: '.5rem' }}>{s.hasPassword ? '🔒' : '—'}</td>
+                  <td style={{ textAlign: 'center', padding: '.5rem', color: '#94a3b8' }}>{s.downloadCount}</td>
+                  <td style={{ textAlign: 'right', padding: '.5rem' }}>
+                    <button onClick={() => handleDelete(s.code)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '.875rem' }}>Delete</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Dashboard (Main Drive View) ───
+function Dashboard() {
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [currentFolder, setCurrentFolder] = useState<Folder | null>(null);
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [stats, setStats] = useState({ fileCount: 0, totalSize: 0, folderCount: 0 });
+  const [uploading, setUploading] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [shareFile, setShareFile] = useState<DriveFile | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [renaming, setRenaming] = useState<{ id: number; name: string; type: 'file' | 'folder' } | null>(null);
+
+  const loadFolders = useCallback(async () => {
+    const r = await fetchFolders();
+    setFolders(r.folders);
+  }, []);
+
+  const loadFiles = useCallback(async (folderId: number) => {
+    const r = await fetchFiles(folderId);
+    setFiles(r.files);
+  }, []);
+
+  const loadStats = useCallback(async () => {
+    const r = await fetchStats();
+    setStats(r);
+  }, []);
+
+  const refresh = useCallback(() => {
+    loadFolders();
+    loadStats();
+    if (currentFolder) loadFiles(currentFolder.id);
+    else setFiles([]);
+  }, [currentFolder, loadFolders, loadFiles, loadStats]);
+
+  useEffect(() => { loadFolders(); loadStats(); }, [loadFolders, loadStats]);
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+    await createFolder(newFolderName.trim());
+    setNewFolderName('');
+    await loadFolders();
+  };
+
+  const handleDeleteFolder = async (id: number) => {
+    await deleteFolder(id);
+    if (currentFolder?.id === id) { setCurrentFolder(null); setFiles([]); }
+    await loadFolders();
+  };
+
+  const handleRename = async () => {
+    if (!renaming || !renaming.name.trim()) return;
+    if (renaming.type === 'folder') {
+      await renameFolder(renaming.id, renaming.name.trim());
+      await loadFolders();
+    } else {
+      await renameFile(renaming.id, renaming.name.trim());
+      if (currentFolder) await loadFiles(currentFolder.id);
+    }
+    setRenaming(null);
+  };
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileInput = e.target;
+    const file = fileInput.files?.[0];
+    if (!file || !currentFolder) return;
+    setUploading(true);
+    try {
+      await uploadFile(currentFolder.id, file);
+      await loadFiles(currentFolder.id);
+    } catch (err: any) {
+      alert('Upload failed: ' + err.message);
+    }
+    setUploading(false);
+    fileInput.value = '';
+  };
+
+  const handleDeleteFile = async (id: number) => {
+    await deleteFile(id);
+    if (currentFolder) await loadFiles(currentFolder.id);
+    await loadStats();
+  };
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    const r = await searchFiles(searchQuery);
+    setFiles(r.files);
+  };
+
+  const fileIcon = (name: string) => {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    const icons: Record<string, string> = {
+      png:'🖼️',jpg:'🖼️',jpeg:'🖼️',gif:'🖼️',webp:'🖼️',svg:'🖼️',
+      mp4:'🎬',mkv:'🎬',mov:'🎬',webm:'🎬',
+      mp3:'🎵',wav:'🎵',flac:'🎵',
+      pdf:'📕',doc:'📝',docx:'📝',txt:'📄',md:'📄',
+      zip:'📦',rar:'📦','7z':'📦',tar:'📦',gz:'📦',
+      js:'💻',ts:'💻',py:'💻',
+      json:'📊',csv:'📊',xlsx:'📊'
+    };
+    return icons[ext] || '📁';
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' }}>
+      {/* Header */}
+      <header style={{ borderBottom: '1px solid #1e293b', padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '1.25rem', color: '#38bdf8' }}>☁️ TG Cloud Drive</h1>
+          <p style={{ margin: '.25rem 0 0', fontSize: '.75rem', color: '#64748b' }}>
+            {stats.fileCount} files · {formatBytes(stats.totalSize)} · {stats.folderCount} folders
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+          <input type="text" placeholder="Search files..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSearch()}
+            style={{ padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.875rem', width: 200, outline: 'none' }} />
+          <button onClick={handleSearch} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer' }}>🔍</button>
+          <button onClick={() => { logout(); window.location.reload(); }} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}>Logout</button>
+        </div>
+      </header>
+
+      <div style={{ display: 'flex', height: 'calc(100vh - 64px)' }}>
+        {/* Sidebar - Folders */}
+        <aside style={{ width: 260, borderRight: '1px solid #1e293b', padding: '1rem', overflow: 'auto', flexShrink: 0 }}>
+          <div style={{ marginBottom: '1rem' }}>
+            <h3 style={{ margin: '0 0 .5rem', fontSize: '.75rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '.05em' }}>Folders</h3>
+            <button
+              onClick={() => { setCurrentFolder(null); setFiles([]); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: !currentFolder ? '#334155' : 'transparent', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem', marginBottom: '.25rem' }}
+            >📂 All Folders</button>
+            {folders.map(f => (
+              <div key={f.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '.25rem' }}>
+                <button
+                  onClick={() => { setCurrentFolder(f); loadFiles(f.id); }}
+                  style={{ flex: 1, textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: currentFolder?.id === f.id ? '#334155' : 'transparent', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem' }}
+                >📁 {f.name}</button>
+                <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'folder' })} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: '.25rem', fontSize: '.75rem' }}>✎</button>
+                <button onClick={() => handleDeleteFolder(f.id)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '.25rem', fontSize: '.75rem' }}>✕</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: '.25rem' }}>
+            <input type="text" placeholder="New folder..." value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleCreateFolder()}
+              style={{ flex: 1, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.875rem', outline: 'none' }} />
+            <button onClick={handleCreateFolder} style={{ padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', cursor: 'pointer', fontWeight: 600 }}>+</button>
+          </div>
+        </aside>
+
+        {/* Main Content */}
+        <main style={{ flex: 1, padding: '1.5rem', overflow: 'auto' }}>
+          {!currentFolder ? (
+            <div style={{ textAlign: 'center', padding: '4rem 0' }}>
+              <p style={{ color: '#64748b', fontSize: '1.125rem' }}>Select a folder to view files</p>
+              <p style={{ color: '#475569', fontSize: '.875rem', marginTop: '.5rem' }}>
+                {stats.folderCount === 0 ? 'Create a folder to get started' : 'Or upload files to an existing folder'}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h2 style={{ margin: 0, fontSize: '1.125rem' }}>📁 {currentFolder.name}</h2>
+                <label style={{ padding: '.5rem 1rem', borderRadius: 6, background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', opacity: uploading ? .7 : 1, fontSize: '.875rem' }}>
+                  {uploading ? 'Uploading...' : '⬆ Upload'}
+                  <input type="file" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} />
+                </label>
+              </div>
+
+              {files.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '4rem 0', color: '#64748b' }}>
+                  <p style={{ fontSize: '1.125rem' }}>This folder is empty</p>
+                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Upload a file to get started</p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: '.5rem' }}>
+                  {files.map(f => (
+                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: '#1e293b', borderRadius: 8, gap: '1rem' }}>
+                      <span style={{ fontSize: '1.25rem' }}>{fileIcon(f.name)}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</p>
+                        <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#64748b' }}>{formatBytes(f.size)}</p>
+                      </div>
+                      <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }}>
+                        <a href={getDlUrl(f.id)} download={f.name}
+                          style={{ padding: '.4rem .75rem', borderRadius: 6, background: '#334155', color: '#e2e8f0', textDecoration: 'none', fontSize: '.75rem' }}>
+                          ⬇ Download
+                        </a>
+                        <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#334155', color: '#38bdf8', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
+                        <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
+                        <button onClick={() => handleDeleteFile(f.id)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </main>
+      </div>
+
+      {/* Share Manager Modal */}
+      {shareFile && <ShareManager file={shareFile} onClose={() => setShareFile(null)} />}
+
+      {/* Rename Dialog */}
+      {renaming && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: 360 }}>
+            <h3 style={{ margin: '0 0 1rem', color: '#e2e8f0', fontSize: '1rem' }}>Rename</h3>
+            <input type="text" value={renaming.name} onChange={e => setRenaming({ ...renaming, name: e.target.value })}
+              onKeyDown={e => e.key === 'Enter' && handleRename()}
+              autoFocus
+              style={{ width: '100%', padding: '.75rem', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: '.5rem', marginTop: '1rem', justifyContent: 'flex-end' }}>
+              <button onClick={() => setRenaming(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleRename} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer' }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Root App ───
+export default function App() {
+  const [authed, setAuthed] = useState(isAuthed());
+
+  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
+  return <Dashboard />;
+}

@@ -1,0 +1,19 @@
+{
+  "name": "tg-cloud-drive-worker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260608.1",
+    "wrangler": "^4.86.0",
+    "typescript": "^5.7.0"
+  }
+}
