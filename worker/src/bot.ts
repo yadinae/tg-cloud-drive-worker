@@ -59,16 +59,23 @@ async function tgFetch(
 
 /**
  * Send a document (file chunk) to the storage channel via Bot API.
- * Returns the file_id and file_unique_id from the sent message.
+ * If topicId is provided, sends the message to that forum topic.
+ * Returns the chunk info including file_id and optional message_id.
  */
 export async function sendDocumentToChannel(
   env: Env,
   blob: ArrayBuffer | Blob,
   fileName: string,
   mimeType: string = 'application/octet-stream',
-): Promise<ChunkInfo> {
+  topicId?: number,
+): Promise<ChunkInfo & { message_id?: number }> {
   const form = new FormData();
   form.append('chat_id', env.STORAGE_CHANNEL_ID);
+
+  // If sending to a specific topic, set the message_thread_id
+  if (topicId) {
+    form.append('message_thread_id', String(topicId));
+  }
 
   const blobSize = blob instanceof Blob ? blob.size : blob.byteLength;
 
@@ -87,6 +94,7 @@ export async function sendDocumentToChannel(
     file_unique_id: data.result.document.file_unique_id,
     size: data.result.document.file_size ?? blobSize,
     part_index: 0,
+    message_id: data.result.message_id,
   };
 }
 

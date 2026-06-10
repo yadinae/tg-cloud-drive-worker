@@ -10,17 +10,16 @@ export interface Env {
 }
 
 // ───── D1 Row Types ─────
-export interface FolderRow {
-  id: number;
+export interface TopicRow {
+  topic_id: number;     // Telegram's message_thread_id
   name: string;
-  parent_id: number | null;
   created_at: number;
   updated_at: number;
 }
 
 export interface FileRow {
   id: number;
-  folder_id: number;
+  topic_id: number;     // message_thread_id in Telegram
   name: string;
   size: number;
   mime_type: string;
@@ -29,6 +28,7 @@ export interface FileRow {
   chunk_count: number;
   bot_file_id: string | null;
   file_unique_id: string | null;
+  message_id: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -50,16 +50,16 @@ export interface ShareRow {
 }
 
 // ───── API Response Shapes ─────
-export interface FolderResponse {
-  id: number;
+export interface TopicResponse {
+  topicId: number;      // message_thread_id
   name: string;
-  parentId: number | null;
+  fileCount: number;    // populated by JOIN
   createdAt: number;
 }
 
 export interface FileResponse {
   id: number;
-  folderId: number;
+  topicId: number;
   name: string;
   size: number;
   mimeType: string;

@@ -3,18 +3,14 @@ import { uploadChunkToChannel, streamFileFromTelegram, getTelegramFilePath } fro
 import { createFile, updateFileManifest, getFile } from './metadata';
 
 // ───── Constants ─────
-// Telegram Bot API upload limit is 50MB per file.
-// We chunk at 48MB to leave room for multipart/form-data overhead.
 const CHUNK_SIZE = 48 * 1024 * 1024;
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 /**
- * Upload a complete file (possibly multi-chunk) to Telegram via Bot API.
- * Returns the first/primary chunk info and the full manifest.
+ * Upload a complete file to a specific topic (forum thread) in Telegram.
  */
 export async function uploadCompleteFile(
   env: Env,
-  folderId: number,
+  topicId: number,
   fileName: string,
   mimeType: string,
   fileBuffer: ArrayBuffer,
@@ -25,15 +21,7 @@ export async function uploadCompleteFile(
   const fileId = `${fileName}-${Date.now()}`;
 
   const emitProgress = (status: UploadProgress['status'], uploadedChunks: number, uploadedBytes: number) => {
-    onProgress?.({
-      fileId,
-      fileName,
-      totalChunks,
-      uploadedChunks,
-      totalBytes: totalSize,
-      uploadedBytes,
-      status,
-    });
+    onProgress?.({ fileId, fileName, totalChunks, uploadedChunks, totalBytes: totalSize, uploadedBytes, status });
   };
 
   emitProgress('preparing', 0, 0);
@@ -50,10 +38,10 @@ export async function uploadCompleteFile(
 
     let attempts = 0;
     let success = false;
-
     while (!success && attempts < 3) {
       try {
-        const chunkInfo = await uploadChunkToChannel(env, chunkData, chunkFileName, 'application/octet-stream');
+        // Send to the specific topic using message_thread_id
+        const chunkInfo = await uploadChunkToChannel(env, chunkData, chunkFileName, 'application/octet-stream', topicId);
         chunks.push({ ...chunkInfo, part_index: i });
         success = true;
       } catch (err: any) {
@@ -62,7 +50,6 @@ export async function uploadCompleteFile(
           emitProgress('error', i, start);
           throw new Error(`Failed to upload chunk ${i} after 3 attempts: ${err.message}`);
         }
-        // Wait before retry (exponential backoff)
         await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempts)));
       }
     }
@@ -70,26 +57,18 @@ export async function uploadCompleteFile(
 
   emitProgress('finalizing', totalChunks, totalSize);
 
-  // Create D1 record with chunk manifest
   const manifestJson = JSON.stringify(chunks);
   const firstChunk = chunks[0];
-
-  // Determine real mime type - use first chunk's actual telegram type if available
   const effectiveMimeType = mimeType || 'application/octet-stream';
 
+  // The message_id is not immediately returned from sendDocument with topic
+  // We store it if available
   const fileRecord = await createFile(
-    env,
-    folderId,
-    fileName,
-    totalSize,
-    effectiveMimeType,
-    manifestJson,
-    totalChunks,
-    firstChunk.file_id,
-    firstChunk.file_unique_id,
+    env, topicId, fileName, totalSize, effectiveMimeType,
+    manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
+    firstChunk.message_id, // may be undefined for first chunk
   );
 
-  // If multi-chunk, make sure the D1 record reflects the full manifest
   if (totalChunks > 1) {
     await updateFileManifest(env, fileRecord.id, manifestJson, totalChunks);
   }
@@ -100,8 +79,7 @@ export async function uploadCompleteFile(
 }
 
 /**
- * Stream a file download through the Worker, pulling from Telegram Bot API.
- * Handles multi-chunk files by concatenating chunks.
+ * Stream file download through Worker, pulling from Telegram Bot API.
  */
 export async function downloadFileStream(
   env: Env,
@@ -118,7 +96,6 @@ export async function downloadFileStream(
 
   const manifest: ChunkInfo[] = JSON.parse(fileRecord.manifest);
 
-  // Single chunk — stream directly
   if (manifest.length === 1) {
     const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
     return new Response(res.body, {
@@ -133,26 +110,18 @@ export async function downloadFileStream(
     });
   }
 
-  // Multi-chunk — currently streams one chunk at a time (simplified).
-  // For true range support across chunks, more complex logic is needed.
-  // For now, we sequentially stream all chunks concatenated.
+  // Multi-chunk — concatenate streams
   if (range) {
-    // For simplicity, ignore range on multi-chunk files and serve full file
-    // A proper implementation would calculate which chunks to fetch
     console.warn('Range requests not yet supported for multi-chunk files');
   }
 
-  // Use the Telegram Bot API's native streaming for each chunk,
-  // return a ReadableStream that concatenates them.
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
 
-  // Fire-and-forget: write chunks sequentially
   (async () => {
     try {
       for (let i = 0; i < manifest.length; i++) {
         const chunkRes = await streamFileFromTelegram(env, manifest[i].file_id);
-        // Read chunk response body and pipe to writer
         const reader = chunkRes.body?.getReader();
         if (!reader) throw new Error(`Failed to read chunk ${i}`);
         while (true) {
@@ -169,7 +138,6 @@ export async function downloadFileStream(
   })();
 
   const totalSize = manifest.reduce((sum, c) => sum + c.size, 0);
-
   return new Response(readable, {
     status: 200,
     headers: {
@@ -181,25 +149,17 @@ export async function downloadFileStream(
   });
 }
 
-/**
- * For share links: return a direct download URL (proxied through Worker)
- * or redirect to Telegram CDN.
- */
 export async function getShareDownloadUrl(env: Env, fileId: number): Promise<string | null> {
   const fileRecord = await getFile(env, fileId);
   if (!fileRecord) return null;
 
   const manifest: ChunkInfo[] = JSON.parse(fileRecord.manifest);
-
   if (manifest.length === 1) {
-    // Single chunk — return Telegram CDN URL
     try {
       return await getTelegramFilePath(env, manifest[0].file_id);
     } catch {
       return null;
     }
   }
-
-  // Multi-chunk — proxy through Worker
-  return null; // Caller should use downloadFileStream instead
+  return null;
 }

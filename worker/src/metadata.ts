@@ -1,69 +1,63 @@
-import type { Env, FolderRow, FileRow, FolderResponse, FileResponse } from './types';
+import type { Env, TopicRow, FileRow, TopicResponse, FileResponse } from './types';
 
-// ───── Folders ─────
+// ───── Topics (mirrors Telegram forum topics) ─────
 
-export async function listFolders(env: Env, parentId: number | null = null): Promise<FolderResponse[]> {
-  let rows: FolderRow[];
-  if (parentId === null) {
-    rows = await env.DB.prepare(
-      'SELECT * FROM folders WHERE parent_id IS NULL ORDER BY name'
-    ).all<FolderRow>().then(r => r.results);
-  } else {
-    rows = await env.DB.prepare(
-      'SELECT * FROM folders WHERE parent_id = ? ORDER BY name'
-    ).bind(parentId).all<FolderRow>().then(r => r.results);
-  }
+export async function listTopics(env: Env): Promise<TopicResponse[]> {
+  const rows = await env.DB.prepare(
+    `SELECT t.*, COUNT(f.id) as file_count
+     FROM topics t
+     LEFT JOIN files f ON f.topic_id = t.topic_id
+     GROUP BY t.topic_id
+     ORDER BY t.name`
+  ).all<TopicRow & { file_count: number }>().then(r => r.results);
 
   return rows.map(r => ({
-    id: r.id,
+    topicId: r.topic_id,
     name: r.name,
-    parentId: r.parent_id,
+    fileCount: r.file_count ?? 0,
     createdAt: r.created_at,
   }));
 }
 
-export async function createFolder(env: Env, name: string, parentId: number | null = null): Promise<FolderResponse> {
+export async function createTopic(env: Env, topicId: number, name: string): Promise<TopicResponse> {
   const result = await env.DB.prepare(
-    'INSERT INTO folders (name, parent_id) VALUES (?, ?) RETURNING *'
-  ).bind(name, parentId).first<FolderRow>();
+    'INSERT INTO topics (topic_id, name) VALUES (?, ?) RETURNING *'
+  ).bind(topicId, name).first<TopicRow>();
 
-  if (!result) throw new Error('Failed to create folder');
+  if (!result) throw new Error('Failed to create topic');
 
   return {
-    id: result.id,
+    topicId: result.topic_id,
     name: result.name,
-    parentId: result.parent_id,
+    fileCount: 0,
     createdAt: result.created_at,
   };
 }
 
-export async function renameFolder(env: Env, id: number, name: string): Promise<boolean> {
+export async function renameTopic(env: Env, topicId: number, name: string): Promise<boolean> {
   const result = await env.DB.prepare(
-    'UPDATE folders SET name = ?, updated_at = unixepoch() WHERE id = ?'
-  ).bind(name, id).run();
-
+    'UPDATE topics SET name = ?, updated_at = unixepoch() WHERE topic_id = ?'
+  ).bind(name, topicId).run();
   return result.success;
 }
 
-export async function deleteFolder(env: Env, id: number): Promise<boolean> {
-  // D1 cascade should handle deleting files within (ON DELETE CASCADE)
-  const result = await env.DB.prepare(
-    'DELETE FROM folders WHERE id = ?'
-  ).bind(id).run();
-
+export async function deleteTopic(env: Env, topicId: number): Promise<boolean> {
+  // Delete files in this topic first
+  await env.DB.prepare('DELETE FROM files WHERE topic_id = ?').bind(topicId).run();
+  const result = await env.DB.prepare('DELETE FROM topics WHERE topic_id = ?').bind(topicId).run();
   return result.success;
 }
 
 // ───── Files ─────
 
-export async function listFiles(env: Env, folderId: number): Promise<FileResponse[]> {
+export async function listFiles(env: Env, topicId: number): Promise<FileResponse[]> {
   const rows = await env.DB.prepare(
-    'SELECT * FROM files WHERE folder_id = ? ORDER BY name'
-  ).bind(folderId).all<FileRow>().then(r => r.results);
+    'SELECT * FROM files WHERE topic_id = ? ORDER BY name'
+  ).bind(topicId).all<FileRow>().then(r => r.results);
 
   return rows.map(r => ({
     id: r.id,
-    folderId: r.folder_id,
+    topicId: r.topic_id,
     name: r.name,
     size: r.size,
     mimeType: r.mime_type,
@@ -80,7 +74,7 @@ export async function getFile(env: Env, fileId: number): Promise<FileRow | null>
 
 export async function createFile(
   env: Env,
-  folderId: number,
+  topicId: number,
   name: string,
   size: number,
   mimeType: string,
@@ -88,11 +82,12 @@ export async function createFile(
   chunkCount: number,
   botFileId: string,
   fileUniqueId: string,
+  messageId?: number,
 ): Promise<FileRow> {
   const result = await env.DB.prepare(
-    `INSERT INTO files (folder_id, name, size, mime_type, manifest, chunk_count, bot_file_id, file_unique_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
-  ).bind(folderId, name, size, mimeType, manifest, chunkCount, botFileId, fileUniqueId)
+    `INSERT INTO files (topic_id, name, size, mime_type, manifest, chunk_count, bot_file_id, file_unique_id, message_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+  ).bind(topicId, name, size, mimeType, manifest, chunkCount, botFileId, fileUniqueId, messageId ?? null)
     .first<FileRow>();
 
   if (!result) throw new Error('Failed to create file record');
@@ -108,7 +103,6 @@ export async function updateFileManifest(
   const result = await env.DB.prepare(
     'UPDATE files SET manifest = ?, chunk_count = ?, updated_at = unixepoch() WHERE id = ?'
   ).bind(manifest, chunkCount, fileId).run();
-
   return result.success;
 }
 
@@ -116,15 +110,11 @@ export async function renameFile(env: Env, fileId: number, name: string): Promis
   const result = await env.DB.prepare(
     'UPDATE files SET name = ?, updated_at = unixepoch() WHERE id = ?'
   ).bind(name, fileId).run();
-
   return result.success;
 }
 
 export async function deleteFile(env: Env, fileId: number): Promise<boolean> {
-  const result = await env.DB.prepare(
-    'DELETE FROM files WHERE id = ?'
-  ).bind(fileId).run();
-
+  const result = await env.DB.prepare('DELETE FROM files WHERE id = ?').bind(fileId).run();
   return result.success;
 }
 
@@ -137,7 +127,7 @@ export async function searchFiles(env: Env, query: string): Promise<FileResponse
 
   return rows.map(r => ({
     id: r.id,
-    folderId: r.folder_id,
+    topicId: r.topic_id,
     name: r.name,
     size: r.size,
     mimeType: r.mime_type,
@@ -148,18 +138,18 @@ export async function searchFiles(env: Env, query: string): Promise<FileResponse
 
 // ───── Stats ─────
 
-export async function getStats(env: Env): Promise<{ fileCount: number; totalSize: number; folderCount: number }> {
+export async function getStats(env: Env): Promise<{ fileCount: number; totalSize: number; topicCount: number; }> {
   const fileStats = await env.DB.prepare(
     'SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as total_size FROM files'
   ).first<{ count: number; total_size: number }>();
 
-  const folderCount = await env.DB.prepare(
-    'SELECT COUNT(*) as count FROM folders'
+  const topicCount = await env.DB.prepare(
+    'SELECT COUNT(*) as count FROM topics'
   ).first<{ count: number }>();
 
   return {
     fileCount: fileStats?.count ?? 0,
     totalSize: fileStats?.total_size ?? 0,
-    folderCount: folderCount?.count ?? 0,
+    topicCount: topicCount?.count ?? 0,
   };
 }

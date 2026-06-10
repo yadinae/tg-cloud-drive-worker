@@ -31,17 +31,17 @@ export async function login(token: string): Promise<boolean> {
 export function logout() { localStorage.removeItem('tgcd_auth_token'); }
 export function isAuthed(): boolean { return !!getToken(); }
 
-export const fetchStats = () => req<{ fileCount: number; totalSize: number; folderCount: number }>('/api/stats');
-export const fetchFolders = (pid?: number | null) => req<{ folders: any[] }>(`/api/folders${pid != null ? `?parentId=${pid}` : ''}`);
-export const createFolder = (name: string, parentId?: number | null) => req<{ ok: boolean; folder: any }>('/api/folders', { method: 'POST', body: JSON.stringify({ name, parentId }) });
-export const renameFolder = (id: number, name: string) => req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
-export const deleteFolder = (id: number) => req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'DELETE' });
+export const fetchStats = () => req<{ fileCount: number; totalSize: number; topicCount: number }>('/api/stats');
+export const fetchTopics = () => req<{ topics: any[] }>('/api/topics');
+export const createTopic = (name: string) => req<{ ok: boolean; topic: any }>('/api/topics', { method: 'POST', body: JSON.stringify({ name }) });
+export const renameTopic = (topicId: number, name: string) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'PUT', body: JSON.stringify({ name }) });
+export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'DELETE' });
 
-export const fetchFiles = (fid: number) => req<{ files: any[] }>(`/api/files?folderId=${fid}`);
+export const fetchFiles = (topicId: number) => req<{ files: any[] }>(`/api/files?topicId=${topicId}`);
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
-export const uploadFile = (folderId: number, file: File) => {
+export const uploadFile = (topicId: number, file: File) => {
   const fd = new FormData();
-  fd.append('file', file); fd.append('folderId', String(folderId)); fd.append('mimeType', file.type);
+  fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
   return req<{ ok: boolean; fileId: number }>('/api/files/upload', { method: 'POST', body: fd });
 };
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
