@@ -73,6 +73,7 @@ export interface ShareResponse {
   fileName: string;
   fileSize: number;
   hasPassword: boolean;
+  password: string | null;   // plaintext for display
   expiresAt: number | null;
   downloadCount: number;
   createdAt: number;
