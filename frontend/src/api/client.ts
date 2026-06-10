@@ -72,3 +72,6 @@ export const getDlUrl = (id: number) => {
 export const createShare = (p: { fileId: number; password?: string; expiresIn?: number }) => req<{ ok: boolean; code: string; url: string }>('/api/shares', { method: 'POST', body: JSON.stringify(p) });
 export const fetchShares = (fileId: number) => req<{ shares: any[] }>(`/api/shares?fileId=${fileId}`);
 export const deleteShare = (code: string) => req<{ ok: boolean }>(`/api/shares/${code}`, { method: 'DELETE' });
+export const fetchAllShares = () => req<{ shares: any[] }>('/api/shares/list-all');
+export const updateShare = (code: string, p: { password?: string; expiresIn?: number }) =>
+  req<{ ok: boolean }>(`/api/shares/${code}`, { method: 'PUT', body: JSON.stringify(p) });

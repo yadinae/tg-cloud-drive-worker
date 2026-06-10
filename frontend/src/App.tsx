@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare } from './api/client';
 
 type View = 'login' | 'drive';
+
+type ShareCategory = 'active' | 'expiring' | 'expired';
 
 interface Topic { topicId: number; name: string; fileCount: number; createdAt: number; }
 interface DriveFile { id: number; topicId: number; name: string; size: number; mimeType: string; chunkCount: number; createdAt: number; }
@@ -137,8 +139,336 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
   );
 }
 
+// ─── Share Manager Page (full-page, all shares) ───
+const CATEGORY_META: Record<ShareCategory, { label: string; icon: string; color: string; desc: string }> = {
+  active: { label: 'Active', icon: '✅', color: '#22c55e', desc: 'Valid share links' },
+  expiring: { label: 'Expiring Soon', icon: '⏳', color: '#f59e0b', desc: 'Expires within 24 hours' },
+  expired: { label: 'Expired', icon: '❌', color: '#f87171', desc: 'No longer accessible' },
+};
+
+const EXPIRY_OPTIONS = [
+  { label: 'Never', value: 0 },
+  { label: '1 hour', value: 3600 },
+  { label: '6 hours', value: 21600 },
+  { label: '1 day', value: 86400 },
+  { label: '3 days', value: 259200 },
+  { label: '7 days', value: 604800 },
+  { label: '30 days', value: 2592000 },
+];
+
+function formatExpiry(expiresAt: number | null): { label: string; color: string } {
+  if (!expiresAt) return { label: 'Never', color: '#64748b' };
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return { label: 'Expired', color: '#f87171' };
+  const hours = Math.floor(remaining / 3600000);
+  if (hours < 1) return { label: Math.floor(remaining / 60000) + 'm', color: '#f97316' };
+  if (hours < 24) return { label: hours + 'h', color: '#f59e0b' };
+  return { label: Math.floor(hours / 24) + 'd', color: '#22c55e' };
+}
+
+function getCategory(share: ShareLink): ShareCategory {
+  if (!share.expiresAt) return 'active';
+  return share.expiresAt < Date.now() ? 'expired' :
+    share.expiresAt < Date.now() + 86400000 ? 'expiring' : 'active';
+}
+
+function ShareManagerPage({ onBack }: { onBack: () => void }) {
+  const [shares, setShares] = useState<ShareLink[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState<ShareCategory | 'all'>('all');
+  const [editShare, setEditShare] = useState<ShareLink | null>(null);
+  const [editPassword, setEditPassword] = useState('');
+  const [editRemovePassword, setEditRemovePassword] = useState(false);
+  const [editExpiresIn, setEditExpiresIn] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const r = await fetchAllShares();
+      setShares(r.shares);
+    } catch (e: any) {
+      setError(e.message || 'Failed to load shares');
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleCopy = async (code: string) => {
+    const url = window.location.origin + '/dl/' + code;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedCode(code);
+      setTimeout(() => setCopiedCode(null), 2000);
+    } catch { alert('Copy failed. Link: ' + url); }
+  };
+
+  const handleRevoke = async (code: string) => {
+    if (!confirm('Revoke this share link? It will no longer be accessible.')) return;
+    try {
+      await deleteShare(code);
+      setShares(shares.filter(s => s.code !== code));
+    } catch (e: any) { alert('Revoke failed: ' + e.message); }
+  };
+
+  const handleEdit = (share: ShareLink) => {
+    setEditShare(share);
+    setEditPassword('');
+    setEditRemovePassword(false);
+    setEditExpiresIn(share.expiresAt ? Math.round((share.expiresAt - Date.now()) / 1000) : 0);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editShare) return;
+    setSaving(true);
+    try {
+      const body: any = { code: editShare.code };
+      if (editPassword) body.password = editPassword;
+      else if (editRemovePassword) body.password = '';
+      body.expiresIn = editExpiresIn;
+      await updateShare(editShare.code, body);
+      setEditShare(null);
+      load();
+    } catch (e: any) { alert('Update failed: ' + e.message); }
+    finally { setSaving(false); }
+  };
+
+  const categories = [
+    { key: 'all' as const, label: 'All', icon: '📋', color: '#38bdf8', count: shares.length, desc: 'All share links' },
+    ...Object.entries(CATEGORY_META).map(([k, v]) => ({
+      key: k as ShareCategory, ...v,
+      count: shares.filter(s => getCategory(s) === k).length,
+    })),
+  ];
+
+  const filteredShares = activeCategory === 'all'
+    ? shares : shares.filter(s => getCategory(s) === activeCategory);
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' }}>
+      <header style={{ borderBottom: '1px solid #1e293b', padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '1.25rem', color: '#38bdf8' }}>🔗 Share Links</h1>
+          <p style={{ margin: '.25rem 0 0', fontSize: '.75rem', color: '#64748b' }}>{shares.length} total share links</p>
+        </div>
+        <div style={{ display: 'flex', gap: '.5rem' }}>
+          <button onClick={load} disabled={loading} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.875rem' }}>
+            {loading ? '🔄' : '🔄 Refresh'}
+          </button>
+          <button onClick={onBack} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>← Back to Drive</button>
+        </div>
+      </header>
+
+      <div style={{ padding: '1.5rem', maxWidth: 1200, margin: '0 auto' }}>
+        {/* Category pills */}
+        <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
+          {categories.map(cat => (
+            <button key={cat.key} onClick={() => setActiveCategory(cat.key)}
+              style={{
+                padding: '.5rem 1rem', borderRadius: 999, fontSize: '.875rem', fontWeight: 500,
+                border: activeCategory === cat.key ? '1px solid ' + cat.color : '1px solid #334155',
+                background: activeCategory === cat.key ? cat.color + '20' : 'transparent',
+                color: activeCategory === cat.key ? cat.color : '#94a3b8',
+                cursor: 'pointer', transition: 'all .15s',
+              }}>
+              {cat.icon} {cat.label} <span style={{ opacity: .6 }}>{cat.count}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Loading / Error / Empty */}
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '3rem 0' }}>
+            <div style={{ width: 32, height: 32, border: '2px solid #38bdf8', borderTopColor: 'transparent', borderRadius: '50%', margin: '0 auto', animation: 'spin 1s linear infinite' }} />
+          </div>
+        )}
+        {error && (
+          <div style={{ background: '#7f1d1d', border: '1px solid #f87171', borderRadius: 8, padding: '1rem', textAlign: 'center', color: '#fca5a5', fontSize: '.875rem' }}>
+            ❌ {error} <button onClick={load} style={{ marginLeft: '.5rem', textDecoration: 'underline', background: 'none', border: 'none', color: '#fca5a5', cursor: 'pointer' }}>Retry</button>
+          </div>
+        )}
+        {!loading && !error && filteredShares.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '4rem 0', color: '#64748b' }}>
+            <p style={{ fontSize: '3rem', marginBottom: '.5rem' }}>🔗</p>
+            <p style={{ fontSize: '1.125rem' }}>No share links found</p>
+            <p style={{ fontSize: '.875rem', marginTop: '.25rem' }}>Share a file from the drive to create one</p>
+          </div>
+        )}
+
+        {/* Table */}
+        {!loading && !error && filteredShares.length > 0 && (
+          <div style={{ background: '#1e293b', borderRadius: 12, border: '1px solid #1e293b', overflow: 'hidden' }}>
+            {/* Header row (desktop) */}
+            <div style={{
+              display: 'none', gridTemplateColumns: '4fr 3fr 1fr 1fr 1fr 2fr',
+              padding: '.75rem 1rem', background: '#334155', borderBottom: '1px solid #1e293b',
+              fontSize: '.75rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase',
+              letterSpacing: '.05em',
+            } as any} className="share-table-header">
+              <div>File</div>
+              <div>Share Link</div>
+              <div style={{ textAlign: 'center' }}>Password</div>
+              <div style={{ textAlign: 'center' }}>Expiry</div>
+              <div style={{ textAlign: 'center' }}>⬇️</div>
+              <div style={{ textAlign: 'right' }}>Actions</div>
+            </div>
+
+            {filteredShares.map(share => {
+              const expiry = formatExpiry(share.expiresAt);
+              const showPw = showPasswords[share.code] || false;
+              return (
+                <div key={share.code} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '4fr 3fr 1fr 1fr 1fr 2fr',
+                  gap: '.5rem',
+                  padding: '.75rem 1rem',
+                  alignItems: 'center',
+                  borderBottom: '1px solid #334155',
+                  fontSize: '.875rem',
+                } as any} className="share-row" onClick={() => { /* responsive fallback */ }}>
+                  {/* File */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', minWidth: 0 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 6, background: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '.75rem', flexShrink: 0 }}>
+                      📄
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{share.fileName}</div>
+                      <div style={{ fontSize: '.75rem', color: '#64748b' }}>{formatBytes(share.fileSize)}</div>
+                    </div>
+                  </div>
+
+                  {/* Share Link */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.25rem', minWidth: 0 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: '.75rem', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#38bdf8' }}>/dl/{share.code}</div>
+                      <div style={{ fontSize: '.7rem', color: '#64748b' }}>{new Date(share.createdAt).toLocaleString()}</div>
+                    </div>
+                    <button onClick={() => handleCopy(share.code)} style={{
+                      flexShrink: 0, padding: '.25rem .5rem', borderRadius: 4,
+                      background: copiedCode === share.code ? '#22c55e' : '#38bdf8',
+                      color: '#0f172a', border: 'none', fontWeight: 600, cursor: 'pointer', fontSize: '.75rem',
+                    }}>
+                      {copiedCode === share.code ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+
+                  {/* Password */}
+                  <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
+                    {share.hasPassword ? (
+                      <>
+                        <span style={{ fontSize: '.8rem', fontFamily: 'monospace', color: '#e2e8f0' }}>
+                          {showPw ? '🔓' : '🔒'}
+                        </span>
+                        <button onClick={() => setShowPasswords({ ...showPasswords, [share.code]: !showPw })}
+                          style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0 }}>
+                          {showPw ? '🙈' : '👁️'}
+                        </button>
+                      </>
+                    ) : (
+                      <span style={{ color: '#64748b' }}>—</span>
+                    )}
+                  </div>
+
+                  {/* Expiry */}
+                  <div style={{ textAlign: 'center' }}>
+                    <span style={{ color: expiry.color, fontWeight: 500 }}>{expiry.label}</span>
+                  </div>
+
+                  {/* Downloads */}
+                  <div style={{ textAlign: 'center', color: '#94a3b8' }}>
+                    {share.downloadCount}
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ textAlign: 'right', display: 'flex', gap: '.25rem', justifyContent: 'flex-end' }}>
+                    <button onClick={() => handleEdit(share)} style={actionBtnStyle}>✏️</button>
+                    <button onClick={() => handleRevoke(share.code)} style={{ ...actionBtnStyle, color: '#f87171' }}>🗑️</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Edit Modal */}
+      {editShare && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#e2e8f0' }}>✏️ Edit Share Link</h3>
+              <button onClick={() => setEditShare(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+            <p style={{ fontSize: '.875rem', color: '#94a3b8', marginBottom: '1rem' }}>
+              <strong style={{ color: '#e2e8f0' }}>{editShare.fileName}</strong> · code: <code style={{ color: '#38bdf8' }}>{editShare.code}</code>
+            </p>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#94a3b8', marginBottom: '.25rem' }}>
+                Password: {editShare.hasPassword ? '🔒 Set — leave blank to keep' : '🔓 Not set'}
+              </label>
+              <input type="text" placeholder="New password" value={editPassword}
+                onChange={e => setEditPassword(e.target.value)}
+                style={inputStyle} />
+              {editShare.hasPassword && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginTop: '.5rem', fontSize: '.875rem', color: '#94a3b8', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={editRemovePassword} onChange={e => setEditRemovePassword(e.target.checked)} style={{ accentColor: '#38bdf8' }} />
+                  Remove password
+                </label>
+              )}
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#94a3b8', marginBottom: '.25rem' }}>Expires in</label>
+              <select value={editExpiresIn} onChange={e => setEditExpiresIn(Number(e.target.value))} style={{ ...inputStyle, cursor: 'pointer' }}>
+                {EXPIRY_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+              <button onClick={() => setEditShare(null)} style={{ padding: '.5rem 1rem', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={handleSaveEdit} disabled={saving} style={{ padding: '.5rem 1.5rem', borderRadius: 8, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem', opacity: saving ? .7 : 1 }}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <style>{`
+        @media (max-width: 768px) {
+          .share-table-header { display: none !important; }
+          .share-row {
+            grid-template-columns: 1fr !important;
+            gap: .25rem !important;
+          }
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+const actionBtnStyle: React.CSSProperties = {
+  padding: '.35rem .5rem', borderRadius: 6, border: 'none',
+  background: '#334155', color: '#94a3b8', cursor: 'pointer',
+  fontSize: '.8rem', lineHeight: 1,
+};
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '.6rem .75rem', borderRadius: 8,
+  border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0',
+  fontSize: '.875rem', outline: 'none', boxSizing: 'border-box',
+};
+
 // ─── Dashboard ───
-function Dashboard() {
+function Dashboard({ onShowShares }: { onShowShares: () => void }) {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
   const [files, setFiles] = useState<DriveFile[]>([]);
@@ -259,6 +589,7 @@ function Dashboard() {
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
             style={{ padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.875rem', width: 200, outline: 'none' }} />
           <button onClick={handleSearch} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer' }}>🔍</button>
+          <button onClick={onShowShares} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#38bdf8', cursor: 'pointer', fontSize: '.875rem', fontWeight: 500 }}>🔗 Shares</button>
           <button onClick={() => { logout(); window.location.reload(); }} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}>Logout</button>
         </div>
       </header>
@@ -392,6 +723,8 @@ function Dashboard() {
 
 export default function App() {
   const [authed, setAuthed] = useState(isAuthed());
+  const [shareManagerOpen, setShareManagerOpen] = useState(false);
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
-  return <Dashboard />;
+  if (shareManagerOpen) return <ShareManagerPage onBack={() => setShareManagerOpen(false)} />;
+  return <Dashboard onShowShares={() => setShareManagerOpen(true)} />;
 }

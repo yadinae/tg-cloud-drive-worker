@@ -1,4 +1,4 @@
-import type { Env, ShareResponse, ShareCreatePayload } from './types';
+import type { Env, ShareResponse, ShareCreatePayload, ShareUpdatePayload } from './types';
 import { getFile } from './metadata';
 import { getTelegramFilePath } from './bot';
 
@@ -196,6 +196,74 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
   }
 
   return shares;
+}
+
+/**
+ * List ALL shares across all files.
+ */
+export async function listAllShares(env: Env): Promise<ShareResponse[]> {
+  const shares: ShareResponse[] = [];
+  try {
+    const list = await env.SHARES.list({ prefix: SHARE_PREFIX });
+    for (const key of list.keys) {
+      const raw = await env.SHARES.get(key.name);
+      if (raw) {
+        const record = JSON.parse(raw);
+        shares.push({
+          code: key.name.replace(SHARE_PREFIX, ''),
+          fileId: record.fileId,
+          fileName: record.fileName,
+          fileSize: record.fileSize,
+          hasPassword: !!record.passwordHash,
+          expiresAt: record.expiresAt,
+          downloadCount: record.downloadCount || 0,
+          createdAt: record.createdAt,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('listAllShares error:', err);
+  }
+  // Sort newest first
+  shares.sort((a, b) => b.createdAt - a.createdAt);
+  return shares;
+}
+
+/**
+ * Update a share link (password, expiry).
+ */
+export async function updateShare(
+  env: Env,
+  code: string,
+  payload: ShareUpdatePayload,
+): Promise<{ ok: boolean; error?: string }> {
+  const raw = await env.SHARES.get(`${SHARE_PREFIX}${code}`);
+  if (!raw) {
+    return { ok: false, error: 'Share link not found' };
+  }
+
+  const record = JSON.parse(raw);
+
+  // Update password
+  if (payload.password !== undefined) {
+    if (payload.password) {
+      record.passwordHash = await sha256(payload.password);
+    } else {
+      record.passwordHash = null;
+    }
+  }
+
+  // Update expiry
+  if (payload.expiresIn !== undefined) {
+    if (payload.expiresIn && payload.expiresIn > 0) {
+      record.expiresAt = Date.now() + payload.expiresIn * 1000;
+    } else {
+      record.expiresAt = null;
+    }
+  }
+
+  await env.SHARES.put(`${SHARE_PREFIX}${code}`, JSON.stringify(record));
+  return { ok: true };
 }
 
 /**

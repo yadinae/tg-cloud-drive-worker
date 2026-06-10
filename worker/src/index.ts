@@ -19,6 +19,8 @@ import {
   getShare,
   verifySharePassword,
   listShares,
+  listAllShares,
+  updateShare,
   deleteShare,
 } from './shares';
 import { verifyBotConnection } from './bot';
@@ -313,6 +315,21 @@ app.delete('/api/shares/:code', async (c) => {
   const code = c.req.param('code');
   const ok = await deleteShare(c.env, code);
   return c.json({ ok });
+});
+
+// GET /api/shares/list-all — list ALL shares across all files
+app.get('/api/shares/list-all', async (c) => {
+  const shares = await listAllShares(c.env);
+  return c.json({ shares });
+});
+
+// PUT /api/shares/:code — update share (password, expiry)
+app.put('/api/shares/:code', async (c) => {
+  const code = c.req.param('code');
+  const payload = await c.req.json();
+  const result = await updateShare(c.env, code, payload);
+  if (!result.ok) return c.json(result, 404);
+  return c.json(result);
 });
 
 // ───── Admin: Debug migration ─────

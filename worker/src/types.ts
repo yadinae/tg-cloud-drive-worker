@@ -96,6 +96,11 @@ export interface ShareCreatePayload {
   expiresIn?: number; // seconds from now
 }
 
+export interface ShareUpdatePayload {
+  password?: string;   // empty string to remove, omit to keep
+  expiresIn?: number;  // 0 to remove expiry, omit to keep
+}
+
 export interface ShareVerifyPayload {
   code: string;
   password: string;
