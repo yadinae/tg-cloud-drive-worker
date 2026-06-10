@@ -88,14 +88,24 @@ app.get('/api/health', async (c) => {
   return c.json({ ok: botStatus.ok, message: botStatus.message });
 });
 
-// ───── All routes below require auth ─────
-app.use('/api/*', authMiddleware);
-
-// ───── Stats ─────
+// ───── Stats (public) ─────
 app.get('/api/stats', async (c) => {
   const stats = await getStats(c.env);
   return c.json(stats);
 });
+
+// ───── Share Verify (public, called from download page) ─────
+app.post('/api/shares/verify', async (c) => {
+  const { code, password } = await c.req.json();
+  if (!code) {
+    return c.json({ error: 'code required' }, 400);
+  }
+  const result = await verifySharePassword(code, password || '', c.env);
+  return c.json(result);
+});
+
+// ───── All routes below require auth ─────
+app.use('/api/*', authMiddleware);
 
 // ───── Folders ─────
 app.get('/api/folders', async (c) => {
@@ -234,15 +244,6 @@ app.delete('/api/shares/:code', async (c) => {
   const code = c.req.param('code');
   const ok = await deleteShare(c.env, code);
   return c.json({ ok });
-});
-
-app.post('/api/shares/verify', async (c) => {
-  const { code, password } = await c.req.json();
-  if (!code) {
-    return c.json({ error: 'code required' }, 400);
-  }
-  const result = await verifySharePassword(code, password || '', c.env);
-  return c.json(result);
 });
 
 // ───── Public: Share Download ─────

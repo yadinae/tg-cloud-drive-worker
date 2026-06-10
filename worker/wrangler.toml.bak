@@ -5,16 +5,17 @@ compatibility_flags = ["nodejs_compat"]
 
 # === Environment variables (set via wrangler secret or dashboard) ===
 # TG_BOT_TOKEN             — Telegram Bot Token from @BotFather
-# STORAGE_CHANNEL_ID       — Group/channel where bot stores files (bot must be admin)
+# STORAGE_CHANNEL_ID       — Channel ID where bot stores files (bot must be admin, format: -100...)
 # DRIVE_AUTH_TOKEN         — Bearer token for web app authentication
 
 # === D1 — Metadata database ===
 [[d1_databases]]
 binding = "DB"
 database_name = "tgcd-meta"
-database_id = "272adc8d-f526-4bfb-97b2-6b3f63c992b9"
+database_id = ""
 
-# === KV — Share links ===
+# === KV — Share links (keep existing pattern) ===
 [[kv_namespaces]]
 binding = "SHARES"
-id = "468970ee2dbd4779ad0b85649fdfa7e3"
+id = ""
+preview_id = ""
