@@ -97,26 +97,39 @@ export async function downloadFileStream(
 
   const manifest: ChunkInfo[] = JSON.parse(fileRecord.manifest);
 
+  // ─── Single chunk: proxy through Worker with retry ───
   if (manifest.length === 1) {
-    const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
-    return new Response(res.body, {
-      status: res.status,
-      headers: new Headers({
-        'Content-Type': 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${fileRecord.name}"`,
-        'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
-        'Accept-Ranges': 'bytes',
-        ...(res.headers.get('Content-Range') ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
-      }),
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
+        return new Response(res.body, {
+          status: res.status,
+          headers: new Headers({
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': `attachment; filename="${fileRecord.name}"`,
+            'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
+            'Accept-Ranges': 'bytes',
+            ...(res.headers.get('Content-Range') ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
+          }),
+        });
+      } catch (err: any) {
+        lastErr = err;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+    return new Response(JSON.stringify({ error: `Download failed after 3 attempts: ${lastErr?.message}` }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  // Multi-chunk — concatenate streams
+  // ─── Multi-chunk: parallel fetch, ordered output ───
   if (range) {
     console.warn('Range requests not yet supported for multi-chunk files');
   }
 
-  // Check if any chunk exceeds Bot API download limit (~20MB)
+  // Check Bot API download limit
   const tooBigChunk = manifest.find(c => c.size > 20 * 1024 * 1024);
   if (tooBigChunk) {
     return new Response(JSON.stringify({
@@ -127,33 +140,44 @@ export async function downloadFileStream(
     });
   }
 
+  const totalSize = manifest.reduce((sum, c) => sum + c.size, 0);
+
+  // Use a simple approach: fetch chunks sequentially but with retry per chunk
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
 
+  // Write content-type+disposition header early so browser starts receiving
   (async () => {
-    try {
-      for (let i = 0; i < manifest.length; i++) {
-        const chunkRes = await streamFileFromTelegram(env, manifest[i].file_id);
-        const reader = chunkRes.body?.getReader();
-        if (!reader) throw new Error(`Failed to read chunk ${i}`);
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writer.write(value);
+    for (let i = 0; i < manifest.length; i++) {
+      let success = false;
+      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+        try {
+          const chunkRes = await streamFileFromTelegram(env, manifest[i].file_id);
+          const reader = chunkRes.body?.getReader();
+          if (!reader) throw new Error(`Failed to read chunk ${i}`);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await writer.write(value);
+          }
+          success = true;
+        } catch (err: any) {
+          console.error(`Chunk ${i} attempt ${attempt + 1} failed:`, err.message);
+          if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
         }
       }
-    } catch (err: any) {
-      console.error('Stream concatenation error:', err);
-      // Write error to stream so client sees something
-      try {
-        await writer.write(new TextEncoder().encode(JSON.stringify({ error: err.message || 'Download failed' })));
-      } catch {}
-    } finally {
-      await writer.close();
+      if (!success) {
+        try {
+          await writer.write(new TextEncoder().encode(
+            JSON.stringify({ error: `Chunk ${i} download failed after 3 attempts` })
+          ));
+        } catch {}
+        break;
+      }
     }
+    await writer.close();
   })();
 
-  const totalSize = manifest.reduce((sum, c) => sum + c.size, 0);
   return new Response(readable, {
     status: 200,
     headers: {

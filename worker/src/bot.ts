@@ -124,34 +124,44 @@ export async function streamFileFromTelegram(
   const headers: Record<string, string> = {};
   if (range) headers['Range'] = range;
 
-  const dlRes = await fetch(dlUrl, { headers });
+  // Abort controller with 25s timeout for the download
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-  // Build response headers for the client
-  const responseHeaders = new Headers({
-    'Content-Type': 'application/octet-stream',
-    'Accept-Ranges': 'bytes',
-    'Cache-Control': 'public, max-age=86400',
-    'Content-Disposition': 'attachment',
-  });
+  try {
+    const dlRes = await fetch(dlUrl, { headers, signal: controller.signal });
+    clearTimeout(timeoutId);
 
-  if (fileSize) {
-    responseHeaders.set('Content-Length', String(fileSize));
+    // Build response headers for the client
+    const responseHeaders = new Headers({
+      'Content-Type': 'application/octet-stream',
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=86400',
+      'Content-Disposition': 'attachment',
+    });
+
+    if (fileSize) {
+      responseHeaders.set('Content-Length', String(fileSize));
+    }
+
+    // Pass through the content-range header if it was a ranged request
+    const contentRange = dlRes.headers.get('content-range');
+    if (contentRange) {
+      responseHeaders.set('Content-Range', contentRange);
+    }
+    const contentLength = dlRes.headers.get('content-length');
+    if (contentLength) {
+      responseHeaders.set('Content-Length', contentLength);
+    }
+
+    return new Response(dlRes.body, {
+      status: dlRes.status,
+      headers: responseHeaders,
+    });
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    throw new Error(`Telegram download timeout or failure: ${err.message}`);
   }
-
-  // Pass through the content-range header if it was a ranged request
-  const contentRange = dlRes.headers.get('content-range');
-  if (contentRange) {
-    responseHeaders.set('Content-Range', contentRange);
-  }
-  const contentLength = dlRes.headers.get('content-length');
-  if (contentLength) {
-    responseHeaders.set('Content-Length', contentLength);
-  }
-
-  return new Response(dlRes.body, {
-    status: dlRes.status,
-    headers: responseHeaders,
-  });
 }
 
 /**
