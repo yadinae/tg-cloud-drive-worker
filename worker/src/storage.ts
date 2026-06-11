@@ -86,6 +86,7 @@ export async function downloadFileStream(
   env: Env,
   fileId: number,
   range?: string,
+  forceDownload?: boolean,
 ): Promise<Response> {
   const fileRecord = await getFile(env, fileId);
   if (!fileRecord) {
@@ -107,8 +108,8 @@ export async function downloadFileStream(
         return new Response(res.body, {
           status: res.status,
           headers: new Headers({
-            'Content-Type': isMedia ? fileRecord.mime_type : 'application/octet-stream',
-            'Content-Disposition': isMedia ? 'inline' : `attachment; filename="${fileRecord.name}"`,
+            'Content-Type': fileRecord.mime_type,
+            'Content-Disposition': forceDownload || !isMedia ? `attachment; filename="${fileRecord.name}"` : 'inline',
             'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
             'Accept-Ranges': 'bytes',
             ...(res.headers.get('Content-Range') ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
@@ -183,7 +184,7 @@ export async function downloadFileStream(
     status: 200,
     headers: {
       'Content-Type': fileRecord.mime_type,
-      'Content-Disposition': 'inline',
+      'Content-Disposition': `attachment; filename="${fileRecord.name}"`,
       'Content-Length': String(totalSize),
       'Accept-Ranges': 'bytes',
     },

@@ -438,7 +438,8 @@ app.delete('/api/files/:id', async (c) => {
 app.get('/api/files/:id/download', async (c) => {
   const id = Number(c.req.param('id'));
   const range = c.req.header('Range');
-  return downloadFileStream(c.env, id, range);
+  const forceDownload = c.req.query('dl') === '1';
+  return downloadFileStream(c.env, id, range, forceDownload);
 });
 
 // ───── Share Links ─────

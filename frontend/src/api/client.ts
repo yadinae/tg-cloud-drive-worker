@@ -133,8 +133,10 @@ export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/a
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 
 export const getDlUrl = (id: number) => {
-  const token = getToken();
   return `/api/files/${id}/download`; // No token in URL for security
+};
+export const getDownloadUrl = (id: number) => {
+  return `/api/files/${id}/download?dl=1`;
 };
 
 /**
@@ -149,7 +151,8 @@ export function downloadFile(
   const token = getToken();
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', `${API_BASE}/api/files/${id}/download?token=${token}`);
+    xhr.open('GET', `${API_BASE}/api/files/${id}/download?dl=1`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.responseType = 'blob';
 
     xhr.onprogress = (e) => {

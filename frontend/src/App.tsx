@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath } from './api/client';
 import { c, s, st } from './design-tokens';
 
 type View = 'login' | 'drive';
@@ -144,9 +144,10 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
                     {s.hasPassword ? (
                       <>
+                        <span style={{ fontSize: '.8rem' }} title={s.password ? 'Password protected' : 'Password set (hash only)'}>🔒</span>
                         <button onClick={() => setShowPasswords(prev => ({ ...prev, [s.code]: !prev[s.code] }))}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0 }}>
-                          {showPasswords[s.code] ? '👁️' : '🔒'}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0, lineHeight: 1 }}>
+                          {showPasswords[s.code] ? '👁️' : '👁️‍🗨️'}
                         </button>
                         {showPasswords[s.code] && (
                           <span style={{ color: s.password ? '#faff69' : '#888888', fontSize: '.75rem', fontFamily: 'monospace' }}>{s.password || '(hash only)'}</span>
@@ -912,7 +913,7 @@ function Dashboard() {
                         {(f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name)) && (
                           <button onClick={() => { audioHandlers.play(files.indexOf(f)); }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>▶ Play</button>
                         )}
-                        <a href={getDlUrl(f.id)} download={f.name}
+                        <a href={getDownloadUrl(f.id)} download={f.name}
                           style={{ padding: '.4rem .75rem', borderRadius: 6, background: '#242424', color: '#ffffff', textDecoration: 'none', fontSize: '.75rem' }}>
                           ⬇ Download
                         </a>
@@ -1004,9 +1005,10 @@ function Dashboard() {
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
                             <>
+                              <span style={{ fontSize: '.8rem', cursor: 'help' }} title={share.password ? 'Password protected' : 'Password set (hash only)'}>🔒</span>
                               <button onClick={() => setShowPasswords(prev => ({ ...prev, [share.code]: !prev[share.code] }))}
-                                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0 }}>
-                                {showPasswords[share.code] ? '👁️' : '🔒'}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0, lineHeight: 1 }}>
+                                {showPasswords[share.code] ? '👁️' : '👁️‍🗨️'}
                               </button>
                               {showPasswords[share.code] && (
                                 <span style={{ color: share.password ? '#faff69' : '#888888', fontSize: '.75rem', fontFamily: 'monospace', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>
