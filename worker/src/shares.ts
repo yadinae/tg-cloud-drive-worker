@@ -56,7 +56,7 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
     fileName: file.name,
     fileSize: file.size,
     passwordHash,
-    password: password || null, // store plaintext for display
+    // password: hash only (removed plaintext storage)
     createdAt: now,
     downloadCount: 0,
     expiresAt,
@@ -189,7 +189,6 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
         fileName: record.fileName,
         fileSize: record.fileSize,
         hasPassword: !!record.passwordHash,
-        password: record.password || null,
         expiresAt: record.expiresAt,
         downloadCount: record.downloadCount || 0,
         createdAt: record.createdAt,
@@ -217,8 +216,7 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
           fileName: record.fileName,
           fileSize: record.fileSize,
           hasPassword: !!record.passwordHash,
-          password: record.password || null,
-          expiresAt: record.expiresAt,
+            expiresAt: record.expiresAt,
           downloadCount: record.downloadCount || 0,
           createdAt: record.createdAt,
         });

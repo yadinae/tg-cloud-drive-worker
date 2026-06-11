@@ -42,8 +42,9 @@ export async function renameTopic(env: Env, topicId: number, name: string): Prom
 }
 
 export async function deleteTopic(env: Env, topicId: number): Promise<boolean> {
-  // Delete files in this topic first
+  // Delete files and folders in this topic first
   await env.DB.prepare('DELETE FROM files WHERE topic_id = ?').bind(topicId).run();
+  await env.DB.prepare('DELETE FROM folders WHERE topic_id = ?').bind(topicId).run();
   const result = await env.DB.prepare('DELETE FROM topics WHERE topic_id = ?').bind(topicId).run();
   return result.success;
 }
@@ -54,7 +55,7 @@ export async function listFiles(env: Env, topicId: number, folderId?: number | n
   if (folderId === undefined) {
     // List ALL files in topic (including those in folders)
     const rows = await env.DB.prepare(
-      'SELECT * FROM files WHERE topic_id = ? ORDER BY name'
+      'SELECT * FROM files WHERE topic_id = ? ORDER BY name LIMIT 1000'
     ).bind(topicId).all<FileRow>().then(r => r.results);
     return rows.map(r => ({
       id: r.id, topicId: r.topic_id, folderId: r.folder_id,
@@ -65,7 +66,7 @@ export async function listFiles(env: Env, topicId: number, folderId?: number | n
   // List files at a specific folder level (null = topic root, number = inside folder)
   const rows = await env.DB.prepare(
     `SELECT * FROM files WHERE topic_id = ? AND (folder_id IS ? OR (folder_id IS NULL AND ? IS NULL))
-     ORDER BY name`
+     ORDER BY name LIMIT 1000`
   ).bind(topicId, folderId ?? null, folderId ?? null).all<FileRow>().then(r => r.results);
   return rows.map(r => ({
     id: r.id, topicId: r.topic_id, folderId: r.folder_id,
@@ -142,7 +143,7 @@ export async function getAndDeleteFile(env: Env, fileId: number): Promise<FileRo
 
 export async function searchFiles(env: Env, query: string): Promise<FileResponse[]> {
   const rows = await env.DB.prepare(
-    'SELECT * FROM files WHERE name LIKE ? ORDER BY name'
+    'SELECT * FROM files WHERE name LIKE ? ORDER BY name LIMIT 1000'
   ).bind(`%${query}%`).all<FileRow>().then(r => r.results);
 
   return rows.map(r => ({
@@ -159,7 +160,7 @@ export async function listFolders(env: Env, topicId: number, parentId?: number |
     // List ALL folders in topic (for tree view)
     const rows = await env.DB.prepare(
       `SELECT f.*, (SELECT COUNT(*) FROM files WHERE folder_id = f.id) as file_count
-       FROM folders f WHERE f.topic_id = ? ORDER BY f.name`
+       FROM folders f WHERE f.topic_id = ? ORDER BY f.name LIMIT 500`
     ).bind(topicId).all<FolderRow & { file_count: number }>().then(r => r.results);
     return rows.map(r => ({ id: r.id, topicId: r.topic_id, parentId: r.parent_id, name: r.name, fileCount: r.file_count, createdAt: r.created_at }));
   }
@@ -167,7 +168,7 @@ export async function listFolders(env: Env, topicId: number, parentId?: number |
   const rows = await env.DB.prepare(
     `SELECT f.*, (SELECT COUNT(*) FROM files WHERE folder_id = f.id) as file_count
      FROM folders f WHERE f.topic_id = ? AND (f.parent_id IS ? OR (f.parent_id IS NULL AND ? IS NULL))
-     ORDER BY f.name`
+     ORDER BY f.name LIMIT 500`
   ).bind(topicId, parentId ?? null, parentId ?? null).all<FolderRow & { file_count: number }>().then(r => r.results);
   return rows.map(r => ({ id: r.id, topicId: r.topic_id, parentId: r.parent_id, name: r.name, fileCount: r.file_count, createdAt: r.created_at }));
 }

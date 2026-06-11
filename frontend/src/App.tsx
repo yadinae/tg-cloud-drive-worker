@@ -143,17 +143,7 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
                   </td>
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
                     {s.hasPassword ? (
-                      s.password ? (
-                        <>
-                          <span>{spw ? s.password : '🔒'}</span>
-                          <button onClick={() => setShowPasswords({...showPasswords, [s.code]: !spw})}
-                            style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '.75rem', padding: 0 }}>
-                            {spw ? '🙈' : '👁️'}
-                          </button>
-                        </>
-                      ) : (
-                        <span title="Password set but cannot be displayed (legacy share)">🔒</span>
-                      )
+                        <span title="Password protected">🔒</span>
                     ) : <span>—</span>}
                   </td>
                   <td style={{ textAlign: 'center', padding: '.5rem', color: '#888888' }}>{s.downloadCount}</td>
@@ -829,8 +819,7 @@ function Dashboard() {
 
                   {filteredShares.map(share => {
                     const expiry = formatExpiry(share.expiresAt);
-                    const showPw = showPasswords[share.code] || false;
-                    return (
+                                        return (
                       <div key={share.code} style={{
                         display: 'grid', gridTemplateColumns: '3fr 2fr 80px 70px 50px 80px',
                         gap: '.5rem', padding: '.75rem 1rem', alignItems: 'center',
@@ -863,23 +852,7 @@ function Dashboard() {
                         {/* Password */}
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
-                            share.password ? (
-                              <>
-                                <span style={{
-                                  maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis',
-                                  fontSize: showPw ? '.75rem' : '.8rem', fontFamily: showPw ? 'monospace' : 'inherit',
-                                  color: '#ffffff',
-                                }}>
-                                  {showPw ? share.password : '🔒'}
-                                </span>
-                                <button onClick={() => setShowPasswords({ ...showPasswords, [share.code]: !showPw })}
-                                  style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '.75rem', padding: 0, lineHeight: 1 }}>
-                                  {showPw ? '🙈' : '👁️'}
-                                </button>
-                              </>
-                            ) : (
-                              <span style={{ color: '#888888', fontSize: '.75rem', cursor: 'help' }} title="Password set (legacy share)">🔒</span>
-                            )
+                              <span style={{ color: '#ffffff', fontSize: '.8rem', cursor: 'help' }} title="Password protected">🔒</span>
                           ) : (
                             <span style={{ color: '#5a5a5a' }}>—</span>
                           )}

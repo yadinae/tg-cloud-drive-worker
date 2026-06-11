@@ -155,8 +155,6 @@ app.get('/api/openapi.json', (c) => {
 // ───── Health ─────
 app.get('/api/health', async (c) => {
   const botStatus = await verifyBotConnection(c.env);
-  // Ensure D1 schema is up to date (idempotent)
-  await ensureSchema(c.env);
   return c.json({ ok: botStatus.ok, message: botStatus.message });
 });
 
@@ -229,11 +227,15 @@ app.put('/api/topics/:topicId', async (c) => {
   const trimmedName = name.trim();
 
   // Rename in Telegram
-  await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/editForumTopic`, {
+  const tgRes = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/editForumTopic`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: c.env.STORAGE_CHANNEL_ID, message_thread_id: topicId, name: trimmedName }),
   });
+  const tgData: any = await tgRes.json();
+  if (!tgData.ok) {
+    return c.json({ error: `Telegram API error: ${tgData.description}` }, 502);
+  }
 
   // Rename in D1
   const ok = await renameTopic(c.env, topicId, trimmedName);
@@ -245,13 +247,17 @@ app.delete('/api/topics/:topicId', async (c) => {
   const topicId = Number(c.req.param('topicId'));
 
   // Delete from Telegram
-  await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/deleteForumTopic`, {
+  const tgRes = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/deleteForumTopic`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: c.env.STORAGE_CHANNEL_ID, message_thread_id: topicId }),
   });
+  const tgData: any = await tgRes.json();
+  if (!tgData.ok) {
+    return c.json({ error: `Telegram API error: ${tgData.description}` }, 502);
+  }
 
-  // Delete from D1 (cascading files)
+  // Delete from D1 (cascading files + folders)
   const ok = await deleteTopic(c.env, topicId);
   return c.json({ ok });
 });
@@ -603,7 +609,7 @@ app.get('/dl/:code', async (c) => {
   }
   const share = shareInfo.share!;
   if (share.hasPassword) {
-    return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Download — ${share.fileName}</title><style>*{box-sizing:border-box;margin:0}body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem}.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:420px}h1{color:#38bdf8;font-size:1.25rem;margin-bottom:.25rem}.meta{color:#94a3b8;font-size:.875rem;margin-bottom:1.5rem}label{display:block;color:#94a3b8;font-size:.875rem;margin-bottom:.5rem}input[type=password]{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:1rem;outline:none}input[type=password]:focus{border-color:#38bdf8}button{width:100%;margin-top:1rem;padding:.75rem;border-radius:8px;border:none;background:#38bdf8;color:#0f172a;font-size:1rem;font-weight:600;cursor:pointer}button:hover{background:#7dd3fc}.error{color:#f87171;font-size:.875rem;margin-top:.5rem;display:none}</style></head><body><div class="card"><h1>📁 ${share.fileName}</h1><div class="meta">${formatBytes(share.fileSize)}</div><label for="pwd">This file is password protected</label><input type="password" id="pwd" placeholder="Enter password" autocomplete="off"><div class="error" id="error"></div><button onclick="download()">Download</button></div><script>async function download(){const pwd=document.getElementById('pwd').value;const err=document.getElementById('error');err.style.display='none';try{const res=await fetch('/api/shares/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${code}',password:pwd})});const data=await res.json();if(data.ok&&data.downloadUrl){window.location.href=data.downloadUrl}else if(data.ok){window.location.href='/dl/${code}/raw'}else{err.textContent=data.error||'Invalid password';err.style.display='block'}}catch(e){err.textContent='Network error';err.style.display='block'}}</script></body></html>`);
+    return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Download — ${escapeHtml(share.fileName)}</title><style>*{box-sizing:border-box;margin:0}body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem}.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:420px}h1{color:#38bdf8;font-size:1.25rem;margin-bottom:.25rem}.meta{color:#94a3b8;font-size:.875rem;margin-bottom:1.5rem}label{display:block;color:#94a3b8;font-size:.875rem;margin-bottom:.5rem}input[type=password]{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:1rem;outline:none}input[type=password]:focus{border-color:#38bdf8}button{width:100%;margin-top:1rem;padding:.75rem;border-radius:8px;border:none;background:#38bdf8;color:#0f172a;font-size:1rem;font-weight:600;cursor:pointer}button:hover{background:#7dd3fc}.error{color:#f87171;font-size:.875rem;margin-top:.5rem;display:none}</style></head><body><div class="card"><h1>📁 ${escapeHtml(share.fileName)}</h1><div class="meta">${formatBytes(share.fileSize)}</div><label for="pwd">This file is password protected</label><input type="password" id="pwd" placeholder="Enter password" autocomplete="off"><div class="error" id="error"></div><button onclick="download()">Download</button></div><script>async function download(){const pwd=document.getElementById('pwd').value;const err=document.getElementById('error');err.style.display='none';try{const res=await fetch('/api/shares/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${code}',password:pwd})});const data=await res.json();if(data.ok&&data.downloadUrl){window.location.href=data.downloadUrl}else if(data.ok){window.location.href='/dl/${code}/raw'}else{err.textContent=data.error||'Invalid password';err.style.display='block'}}catch(e){err.textContent='Network error';err.style.display='block'}}</script></body></html>`);
   }
   return c.redirect(`/dl/${code}/raw`);
 });
@@ -631,6 +637,10 @@ app.onError((err, c) => {
 export default app;
 
 // ───── Helper ─────
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 B';
   const k = 1024;

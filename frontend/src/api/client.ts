@@ -134,7 +134,7 @@ export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}
 
 export const getDlUrl = (id: number) => {
   const token = getToken();
-  return `/api/files/${id}/download?token=${token}`;
+  return `/api/files/${id}/download`; // No token in URL for security
 };
 
 /**
