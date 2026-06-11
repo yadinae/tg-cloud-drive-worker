@@ -50,3 +50,10 @@ export interface ShareCreatePayload {
   password?: string;
   expiresIn?: number;
 }
+
+// Allow webkitdirectory attribute on HTML input elements
+declare module 'react' {
+  interface InputHTMLAttributes<T> {
+    webkitdirectory?: string | boolean;
+  }
+}

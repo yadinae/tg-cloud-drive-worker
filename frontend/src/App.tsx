@@ -230,6 +230,8 @@ function Dashboard() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderPath, setFolderPath] = useState<{ id: number; name: string }[]>([]);
   const [newFolderName, setNewFolderName] = useState('');
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingFolderName, setUploadingFolderName] = useState('');
 
   // ─── Audio Player State ───
   const [audioQueue, setAudioQueue] = useState<DriveFile[]>([]);
@@ -326,6 +328,83 @@ function Dashboard() {
     setUploading(false);
     setUploadProgress(0);
     fileInput.value = '';
+  };
+
+  // ─── Folder Upload ───
+  const ensureFolderPath = async (topicId: number, pathParts: string[]): Promise<number | null> => {
+    let parentId: number | null = currentFolder;
+    for (const part of pathParts) {
+      if (!part) continue;
+      const r = await fetchFolders(topicId, parentId);
+      const existing = (r.folders || []).find((f: Folder) => f.name === part);
+      if (existing) {
+        parentId = existing.id;
+      } else {
+        const cr = await createFolderApi(topicId, part, parentId);
+        parentId = cr.folder?.id ?? null;
+      }
+    }
+    return parentId;
+  };
+
+  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    if (!input.files || !input.files.length || !currentTopic) return;
+    const fileList = Array.from(input.files);
+    const folderName = fileList[0].webkitRelativePath?.split('/')[0] || 'folder';
+    setUploading(true);
+    setUploadProgress(0);
+    setUploadingFolderName(folderName);
+    try {
+      // Group files by their directory path
+      const dirMap = new Map<string, File[]>();
+      for (const file of fileList) {
+        const parts = file.webkitRelativePath?.split('/') || [file.name];
+        const dirPath = parts.slice(0, -1).join('/');
+        if (!dirMap.has(dirPath)) dirMap.set(dirPath, []);
+        dirMap.get(dirPath)!.push(file);
+      }
+      // Sort by depth (shallow first so parent folders exist)
+      const sortedDirs = Array.from(dirMap.entries()).sort((a, b) => a[0].split('/').length - b[0].split('/').length);
+      // Create folder tree and upload
+      const pathFolderMap = new Map<string, number | null>();
+      pathFolderMap.set('', currentFolder); // root
+      let total = 0, done = 0;
+      for (const [, files] of sortedDirs) total += files.length;
+      for (const [dirPath, files] of sortedDirs) {
+        const parts = dirPath ? dirPath.split('/') : [];
+        // Resolve parent folder id
+        const parentPath = parts.slice(0, -1).join('/');
+        const parentId = pathFolderMap.get(parentPath) ?? currentFolder;
+        let folderId: number | null = parentId;
+        if (parts.length > 0) {
+          const leafName = parts[parts.length - 1];
+          const r = await fetchFolders(currentTopic.topicId, parentId);
+          const existing = (r.folders || []).find((f: Folder) => f.name === leafName);
+          if (existing) {
+            folderId = existing.id;
+          } else {
+            const cr = await createFolderApi(currentTopic.topicId, leafName, parentId);
+            folderId = cr.folder?.id ?? null;
+          }
+        }
+        pathFolderMap.set(dirPath, folderId);
+        // Upload files in this directory
+        for (const file of files) {
+          await uploadFile(currentTopic.topicId, file, (pct) => setUploadProgress(Math.round(((done * 100 + pct) / total))), folderId);
+          done++;
+        }
+      }
+      await loadFiles(currentTopic.topicId, currentFolder);
+      await loadFolders(currentTopic.topicId, currentFolder);
+      await loadTopics();
+    } catch (err: any) {
+      alert('Folder upload failed: ' + err.message);
+    }
+    setUploading(false);
+    setUploadProgress(0);
+    setUploadingFolderName('');
+    input.value = '';
   };
 
   const handleDeleteFile = async (id: number) => {
@@ -437,6 +516,13 @@ function Dashboard() {
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); };
   const handleDropFiles = async (fileList: FileList) => {
     if (!fileList.length || !currentTopic) return;
+    // Check if files have folder structure (webkitRelativePath)
+    const hasFolderStructure = Array.from(fileList).some(f => f.webkitRelativePath && f.webkitRelativePath.includes('/'));
+    if (hasFolderStructure) {
+      // Use folder upload logic
+      handleFolderDropFiles(fileList);
+      return;
+    }
     setUploading(true); setUploadProgress(0);
     try {
       for (let i = 0; i < fileList.length; i++) {
@@ -445,6 +531,56 @@ function Dashboard() {
       await loadFiles(currentTopic.topicId, currentFolder); await loadTopics();
     } catch (err: any) { alert('Upload failed: ' + err.message); }
     setUploading(false); setUploadProgress(0);
+  };
+
+  const handleFolderDropFiles = async (fileList: FileList) => {
+    if (!currentTopic) return;
+    const files = Array.from(fileList);
+    const folderName = files[0].webkitRelativePath?.split('/')[0] || 'folder';
+    setUploading(true); setUploadProgress(0);
+    setUploadingFolderName(folderName);
+    try {
+      // Group files by directory path
+      const dirMap = new Map<string, File[]>();
+      for (const file of files) {
+        const parts = file.webkitRelativePath?.split('/') || [file.name];
+        const dirPath = parts.slice(0, -1).join('/');
+        if (!dirMap.has(dirPath)) dirMap.set(dirPath, []);
+        dirMap.get(dirPath)!.push(file);
+      }
+      const sortedDirs = Array.from(dirMap.entries()).sort((a, b) => a[0].split('/').length - b[0].split('/').length);
+      const pathFolderMap = new Map<string, number | null>();
+      pathFolderMap.set('', currentFolder);
+      let total = 0, done = 0;
+      for (const [, f] of sortedDirs) total += f.length;
+      for (const [dirPath, f] of sortedDirs) {
+        const parts = dirPath ? dirPath.split('/') : [];
+        const parentPath = parts.slice(0, -1).join('/');
+        const parentId = pathFolderMap.get(parentPath) ?? currentFolder;
+        let folderId: number | null = parentId;
+        if (parts.length > 0) {
+          const leafName = parts[parts.length - 1];
+          const r = await fetchFolders(currentTopic.topicId, parentId);
+          const existing = (r.folders || []).find((x: Folder) => x.name === leafName);
+          if (existing) {
+            folderId = existing.id;
+          } else {
+            const cr = await createFolderApi(currentTopic.topicId, leafName, parentId);
+            folderId = cr.folder?.id ?? null;
+          }
+        }
+        pathFolderMap.set(dirPath, folderId);
+        for (const file of f) {
+          await uploadFile(currentTopic.topicId, file, (pct) => setUploadProgress(Math.round(((done * 100 + pct) / total))), folderId);
+          done++;
+        }
+      }
+      await loadFiles(currentTopic.topicId, currentFolder);
+      await loadFolders(currentTopic.topicId, currentFolder);
+      await loadTopics();
+    } catch (err: any) { alert('Folder drop failed: ' + err.message); }
+    setUploading(false); setUploadProgress(0);
+    setUploadingFolderName('');
   };
   const handleDrop = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setDragging(false); dragCounter.current = 0; if (e.dataTransfer.files && e.dataTransfer.files.length > 0) handleDropFiles(e.dataTransfer.files); };
 
@@ -672,15 +808,22 @@ function Dashboard() {
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                 <h2 style={{ margin: 0, fontSize: '1.125rem' }}>📁 {currentTopic.name}</h2>
-                <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
-                  <label style={{ padding: '.5rem 1rem', borderRadius: 6, background: uploading ? '#242424' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem' }}>
-                    {uploading ? `${uploadProgress}%` : `⬆ Upload${currentFolder !== null ? ' → 📁' : ''}`}
+                <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ padding: '.5rem .9rem', borderRadius: 6, background: uploading ? '#242424' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem', whiteSpace: 'nowrap' }}>
+                    {uploading && !uploadingFolderName ? `${uploadProgress}%` : `⬆ File`}
                     <input type="file" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} multiple />
+                  </label>
+                  <label style={{ padding: '.5rem .9rem', borderRadius: 6, background: uploading ? '#242424' : '#242424', color: uploading ? '#5a5a5a' : '#faff69', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem', whiteSpace: 'nowrap', border: '1px solid #334155' }}>
+                    {uploading && uploadingFolderName ? `${uploadProgress}%` : `📁 Folder`}
+                    <input type="file" ref={folderInputRef} onChange={handleFolderUpload} style={{ display: 'none' }} disabled={uploading} multiple webkitdirectory />
                   </label>
                   {uploading && (
                     <div style={{ width: 100, height: 4, background: '#242424', borderRadius: 2, overflow: 'hidden' }}>
                       <div style={{ width: `${uploadProgress}%`, height: '100%', background: '#faff69', borderRadius: 2, transition: 'width .2s' }} />
                     </div>
+                  )}
+                  {uploading && uploadingFolderName && (
+                    <span style={{ color: '#888888', fontSize: '.75rem', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{uploadingFolderName}</span>
                   )}
                 </div>
               </div>
