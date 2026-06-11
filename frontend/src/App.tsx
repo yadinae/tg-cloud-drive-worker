@@ -354,10 +354,16 @@ function Dashboard() {
     setMoveFile(f);
     setMoveTopicId(f.topicId);
     setMoveTargetFolder(f.folderId);
+    setMoveTargetFolders([]);
     try {
       const r = await fetchFolders(f.topicId);
-      setMoveTargetFolders(r.folders);
-    } catch { setMoveTargetFolders([]); }
+      // Filter out the current file's folder from choices
+      const allFolders = (r.folders || []).filter((folder: Folder) => folder.id !== f.folderId);
+      setMoveTargetFolders(allFolders);
+    } catch (err: any) {
+      alert('Failed to load folders: ' + (err.message || 'unknown error'));
+      setMoveTargetFolders([]);
+    }
   };
 
   const handleConfirmMove = async () => {
@@ -459,7 +465,7 @@ function Dashboard() {
       setAudioQueue([]);
       return;
     }
-    if (audioIndex < 0) { setAudioIndex(0); }
+    // Never auto-start — user clicks ▶ to play
     setAudioQueue(audioFiles);
   }, [files]);
 
@@ -763,7 +769,7 @@ function Dashboard() {
                           <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🎬 Preview</button>
                         )}
                         {(f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name)) && (
-                          <button onClick={() => { setPreviewFile(f); }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>▶ Play</button>
+                          <button onClick={() => { audioHandlers.play(files.indexOf(f)); }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>▶ Play</button>
                         )}
                         <a href={getDlUrl(f.id)} download={f.name}
                           style={{ padding: '.4rem .75rem', borderRadius: 6, background: '#242424', color: '#ffffff', textDecoration: 'none', fontSize: '.75rem' }}>
@@ -974,7 +980,7 @@ function Dashboard() {
           <audio ref={audioRef} src={audioIndex >= 0 ? getDlUrl(audioQueue[audioIndex].id) : undefined}
             onTimeUpdate={audioHandlers.onTimeUpdate} onLoadedMetadata={audioHandlers.onLoadedMetadata}
             onEnded={audioHandlers.onEnded} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)}
-            autoPlay />
+            />
           <div style={{ minWidth: 0, flex: '0 0 180px', overflow: 'hidden' }}>
             <div style={{ fontSize: '.8rem', color: '#ffffff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {audioIndex >= 0 ? audioQueue[audioIndex].name : ''}
@@ -1020,6 +1026,9 @@ function Dashboard() {
                   style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === null ? '#2a2a2a' : '#242424', color: moveTargetFolder === null ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
                   📂 Topic root (no folder)
                 </button>
+                {moveTargetFolders.length === 0 && (
+                  <p style={{ color: '#5a5a5a', fontSize: '.8rem', textAlign: 'center', padding: '1rem 0' }}>No sub-folders — create one first</p>
+                )}
                 {moveTargetFolders.map(f => (
                   <button key={f.id} onClick={() => setMoveTargetFolder(f.id)}
                     style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === f.id ? '#2a2a2a' : '#242424', color: moveTargetFolder === f.id ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
