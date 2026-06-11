@@ -33,6 +33,13 @@ function formatDuration(ms: number): string {
   return `${m}m ${s % 60}s`;
 }
 
+function formatTime(sec: number): string {
+  if (!sec || !isFinite(sec)) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 // ─── Login ───
 function Login({ onLogin }: { onLogin: () => void }) {
   const [token, setToken] = useState('');
@@ -293,6 +300,89 @@ function Dashboard() {
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
   const [uploadStartTime, setUploadStartTime] = useState<number>(0);
+
+  // ─── Audio Player ───
+  const [audioQueue, setAudioQueue] = useState<DriveFile[]>([]);
+  const [audioIndex, setAudioIndex] = useState<number>(-1);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const isAudioFile = (f: DriveFile) =>
+    f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a|wma)$/i.test(f.name);
+
+  const currentAudioFile = audioIndex >= 0 && audioIndex < audioQueue.length ? audioQueue[audioIndex] : null;
+
+  const handlePlayAudio = (file: DriveFile, contextFiles: DriveFile[]) => {
+    // Build queue from this file onwards (include all audio files after the clicked one)
+    const allAudio = contextFiles.filter(isAudioFile);
+    const startIdx = allAudio.findIndex(f => f.id === file.id);
+    if (startIdx < 0) {
+      setAudioQueue([file]);
+      setAudioIndex(0);
+    } else {
+      setAudioQueue(allAudio);
+      setAudioIndex(startIdx);
+    }
+    setIsAudioPlaying(true);
+  };
+
+  const handleAudioEnded = () => {
+    if (audioIndex < audioQueue.length - 1) {
+      setAudioIndex(prev => prev + 1);
+    } else {
+      setIsAudioPlaying(false);
+      setAudioIndex(-1);
+    }
+  };
+
+  const handlePrevTrack = () => {
+    if (audioIndex > 0) setAudioIndex(prev => prev - 1);
+    else { audioRef.current?.currentTime && (audioRef.current.currentTime = 0); }
+  };
+
+  const handleNextTrack = () => {
+    if (audioIndex < audioQueue.length - 1) setAudioIndex(prev => prev + 1);
+    else { setIsAudioPlaying(false); setAudioIndex(-1); }
+  };
+
+  const togglePlay = () => {
+    if (!audioRef.current) return;
+    if (audioRef.current.paused) { audioRef.current.play(); setIsAudioPlaying(true); }
+    else { audioRef.current.pause(); setIsAudioPlaying(false); }
+  };
+
+  // Control audio element when index changes
+  useEffect(() => {
+    if (!audioRef.current || audioIndex < 0 || !currentAudioFile) return;
+    const src = getDlUrl(currentAudioFile.id);
+    if (audioRef.current.src !== src) {
+      audioRef.current.src = src;
+      audioRef.current.load();
+    }
+    if (isAudioPlaying) {
+      audioRef.current.play().catch(() => {});
+    }
+  }, [audioIndex, currentAudioFile?.id]);
+
+  // Sync play state
+  useEffect(() => {
+    if (!audioRef.current || audioIndex < 0) return;
+    if (isAudioPlaying) audioRef.current.play().catch(() => {});
+    else audioRef.current.pause();
+  }, [isAudioPlaying]);
+
+  // Time update
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    const onTime = () => { setAudioProgress(el.currentTime); setAudioDuration(el.duration || 0); };
+    const onEnd = () => handleAudioEnded();
+    el.addEventListener('timeupdate', onTime);
+    el.addEventListener('ended', onEnd);
+    return () => { el.removeEventListener('timeupdate', onTime); el.removeEventListener('ended', onEnd); };
+  }, [audioQueue, audioIndex]);
 
   const loadTopics = useCallback(async () => {
     const r = await fetchTopics();
@@ -670,7 +760,7 @@ function Dashboard() {
         </aside>
 
         {/* ─── MAIN CONTENT ─── */}
-        <main style={{ flex: 1, padding: '1.5rem', overflow: 'auto' }}
+        <main style={{ flex: 1, padding: '1.5rem', overflow: 'auto', paddingBottom: currentAudioFile ? '64px' : '1.5rem' }}
           onDragOver={currentTopic ? handleDragOver : undefined}
           onDragLeave={currentTopic ? handleDragLeave : undefined}
           onDrop={currentTopic ? handleDrop : undefined}
@@ -731,7 +821,7 @@ function Dashboard() {
                 </div>
                 <div style={{ display: 'flex', gap: '.35rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   <input ref={fileInputRef} type="file" multiple onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} />
-                  <input type="file" multiple webkitdirectory onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} id="folder-upload" />
+                  <input type="file" multiple {...{webkitdirectory: true} as any} onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} id="folder-upload" />
                   {folderStack.length > 0 && (
                     <button onClick={handleFolderUp} style={{ padding: '.35rem .65rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>⬆ Up</button>
                   )}
@@ -841,9 +931,16 @@ function Dashboard() {
                       </div>
                       <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }}>
                         {isMedia(f) && (
-                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#334155', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>
-                            {f.mimeType?.startsWith('video/') ? '🎬 Preview' :
-                             f.mimeType?.startsWith('audio/') ? '🎵 Play' : '🖼 Preview'}
+                          <button onClick={() => {
+                            if (isAudioFile(f)) {
+                              handlePlayAudio(f, files);
+                            } else {
+                              setPreviewFile(f);
+                            }
+                          }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: currentAudioFile?.id === f.id ? '#7c3aed' : '#334155', color: currentAudioFile?.id === f.id ? '#fff' : '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>
+                            {currentAudioFile?.id === f.id ? (isAudioPlaying ? '⏸ Now Playing' : '▶️ Paused') :
+                             isAudioFile(f) ? '🎵 Play' :
+                             f.mimeType?.startsWith('video/') ? '🎬 Preview' : '🖼 Preview'}
                           </button>
                         )}
                         <button onClick={() => handleDownload(f)}
@@ -1084,6 +1181,61 @@ function Dashboard() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Hidden audio element */}
+      <audio ref={audioRef} preload="auto" />
+
+      {/* Persistent Audio Player Bar */}
+      {currentAudioFile && audioIndex >= 0 && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 900,
+          background: '#0f172a', borderTop: '1px solid #334155',
+          padding: '.5rem 1rem', display: 'flex', alignItems: 'center', gap: '.75rem',
+        }}>
+          {/* Track info */}
+          <div style={{ minWidth: 0, flex: '0 0 auto', maxWidth: 240 }}>
+            <p style={{ margin: 0, fontSize: '.8rem', color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              🎵 {currentAudioFile.name}
+            </p>
+            <p style={{ margin: 0, fontSize: '.7rem', color: '#64748b' }}>
+              {audioIndex + 1} / {audioQueue.length}
+            </p>
+          </div>
+
+          {/* Controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '.25rem', flexShrink: 0 }}>
+            <button onClick={handlePrevTrack} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.1rem', padding: '.25rem' }}>⏮</button>
+            <button onClick={togglePlay} style={{ background: '#38bdf8', border: 'none', color: '#0f172a', borderRadius: '50%', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '1rem', fontWeight: 700 }}>
+              {isAudioPlaying ? '⏸' : '▶️'}
+            </button>
+            <button onClick={handleNextTrack} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.1rem', padding: '.25rem' }}>⏭</button>
+          </div>
+
+          {/* Progress bar */}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+            <span style={{ fontSize: '.7rem', color: '#64748b', minWidth: 32, textAlign: 'right' }}>{formatTime(audioProgress)}</span>
+            <div style={{ flex: 1, height: 4, background: '#334155', borderRadius: 2, cursor: 'pointer', position: 'relative' }}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const pct = (e.clientX - rect.left) / rect.width;
+                if (audioRef.current && audioDuration > 0) {
+                  audioRef.current.currentTime = pct * audioDuration;
+                }
+              }}>
+              <div style={{
+                width: `${audioDuration > 0 ? (audioProgress / audioDuration) * 100 : 0}%`,
+                height: '100%', background: '#38bdf8', borderRadius: 2,
+                transition: 'width .2s linear',
+              }} />
+            </div>
+            <span style={{ fontSize: '.7rem', color: '#64748b', minWidth: 32 }}>{formatTime(audioDuration)}</span>
+          </div>
+
+          {/* Close */}
+          <button onClick={() => { setIsAudioPlaying(false); setAudioIndex(-1); setAudioQueue([]); }}
+            style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.9rem', padding: '.25rem', flexShrink: 0 }}>✕</button>
         </div>
       )}
     </div>
