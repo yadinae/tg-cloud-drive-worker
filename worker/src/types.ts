@@ -19,7 +19,7 @@ export interface TopicRow {
 
 export interface FileRow {
   id: number;
-  topic_id: number;     // message_thread_id in Telegram
+  topic_id: number;
   folder_id: number | null;
   name: string;
   size: number;
@@ -110,14 +110,13 @@ export interface ShareVerifyPayload {
   password: string;
 }
 
-// ───── Folders ─────
+// ───── Folder Types ─────
 export interface FolderRow {
   id: number;
   topic_id: number;
   parent_id: number | null;
   name: string;
   created_at: number;
-  updated_at: number;
 }
 
 export interface FolderResponse {

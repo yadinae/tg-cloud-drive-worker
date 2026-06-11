@@ -38,20 +38,26 @@ export const createTopic = (name: string) => req<{ ok: boolean; topic: any }>('/
 export const renameTopic = (topicId: number, name: string) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'DELETE' });
 
-export const fetchFiles = (topicId: number, folderId?: number | null) =>
-  req<{ files: any[] }>(`/api/files?topicId=${topicId}${folderId ? `&folderId=${folderId}` : ''}`);
+export const fetchFiles = (topicId: number, folderId?: string) => {
+  let path = `/api/files?topicId=${topicId}`;
+  if (folderId !== undefined) path += `&folderId=${folderId}`;
+  return req<{ files: any[] }>(path);
+};
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
 
 /**
- * Upload a single file to a topic. Files >18MB are split into chunks client-side.
+ * Upload a file to a topic. Files >18MB are split into chunks client-side.
+ * Optionally upload into a specific folder.
  */
-function uploadSingleFile(topicId: number, file: File, token: string | null, onProgress?: (pct: number) => void, folderId?: number | null): Promise<{ ok: boolean; fileId: number }> {
+export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void, folderId?: number | null): Promise<{ ok: boolean; fileId: number }> {
+  const token = getToken();
+
   // ─── Small files: single upload with XHR progress ───
   if (file.size <= CHUNK_THRESHOLD) {
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
-      if (folderId) fd.append('folderId', String(folderId));
+      if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${API_BASE}/api/files/upload`);
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
@@ -71,7 +77,7 @@ function uploadSingleFile(topicId: number, file: File, token: string | null, onP
   }
 
   // ─── Large files: chunked upload ───
-  const CHUNK_SIZE = 18 * 1024 * 1024;
+  const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — must be under Bot API 20MB download limit
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
   const uploadId = crypto.randomUUID();
 
@@ -89,6 +95,7 @@ function uploadSingleFile(topicId: number, file: File, token: string | null, onP
       fd.append('fileName', file.name);
       fd.append('fileSize', String(file.size));
       fd.append('mimeType', file.type);
+      if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
 
       await new Promise<void>((resolveChunk, rejectChunk) => {
         const xhr = new XMLHttpRequest();
@@ -112,6 +119,7 @@ function uploadSingleFile(topicId: number, file: File, token: string | null, onP
         xhr.send(fd);
       });
     }
+    // Finalize
     return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
       method: 'POST',
       body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks, folderId }),
@@ -121,122 +129,73 @@ function uploadSingleFile(topicId: number, file: File, token: string | null, onP
   return run();
 }
 
-/**
- * Upload multiple files to a topic. Reports per-file progress.
- */
-export async function uploadFiles(
-  topicId: number,
-  files: File[],
-  onFileProgress?: (index: number, pct: number, status: 'uploading' | 'done' | 'error', error?: string) => void,
-  folderId?: number | null,
-  onAllDone?: () => void,
-): Promise<void> {
-  const token = getToken();
-  for (let i = 0; i < files.length; i++) {
-    try {
-      onFileProgress?.(i, 0, 'uploading');
-      await uploadSingleFile(topicId, files[i], token, (pct) => onFileProgress?.(i, pct, 'uploading'), folderId);
-      onFileProgress?.(i, 100, 'done');
-    } catch (err: any) {
-      onFileProgress?.(i, 0, 'error', err.message);
-    }
-  }
-  onAllDone?.();
-}
-
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
-export const moveFile = (id: number, topicId: number) => req<{ ok: boolean }>(`/api/files/${id}/move`, { method: 'PUT', body: JSON.stringify({ topicId }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
-
-// ───── Folders ─────
-export const fetchFolders = (topicId: number, parentId?: number | null) =>
-  req<{ folders: any[] }>(`/api/folders?topicId=${topicId}${parentId ? `&parentId=${parentId}` : ''}`);
-export const createFolder = (topicId: number, name: string, parentId?: number | null) =>
-  req<{ ok: boolean; folder: any }>('/api/folders', { method: 'POST', body: JSON.stringify({ topicId, name, parentId: parentId ?? null }) });
-export const renameFolder = (id: number, name: string) =>
-  req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
-export const deleteFolder = (id: number) =>
-  req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'DELETE' });
 
 export const getDlUrl = (id: number) => {
   const token = getToken();
-  return `/api/files/${id}/download?token=${token}`;
+  return `/api/files/${id}/download`; // No token in URL for security
 };
 
 /**
- * Download a file with progress tracking via fetch + ReadableStream.
- * Resolves when the blob is ready and triggers the browser save dialog.
+ * Download a file with XHR progress tracking.
+ * Downloads the full blob in-memory, then triggers browser save dialog.
  */
-export function downloadFileWithProgress(
-  fileId: number,
+export function downloadFile(
+  id: number,
   fileName: string,
   onProgress?: (pct: number) => void,
 ): Promise<void> {
   const token = getToken();
-  const url = `${API_BASE}/api/files/${fileId}/download?token=${encodeURIComponent(token || '')}`;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', `${API_BASE}/api/files/${id}/download?token=${token}`);
+    xhr.responseType = 'blob';
 
-  return new Promise(async (resolve, reject) => {
-    try {
-      const res = await fetch(url);
-
-      if (!res.ok) {
-        // Try to read error body
-        try {
-          const errData = await res.json();
-          reject(new Error(errData.error || 'HTTP ' + res.status));
-        } catch {
-          reject(new Error('Download failed (HTTP ' + res.status + ')'));
-        }
-        return;
+    xhr.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
       }
+    };
 
-      const contentLength = res.headers.get('Content-Length');
-      const total = contentLength ? parseInt(contentLength, 10) : 0;
-
-      if (!total || !res.body) {
-        // Fallback: no streaming progress, just get the blob
-        const blob = await res.blob();
-        triggerDownload(blob, fileName);
-        onProgress?.(100);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const blob = xhr.response as Blob;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
         resolve();
-        return;
+      } else {
+        reject(new Error(`HTTP ${xhr.status}`));
       }
+    };
 
-      // Stream with progress tracking
-      const reader = res.body.getReader();
-      const chunks: BlobPart[] = [];
-      let received = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        if (onProgress && total > 0) {
-          onProgress(Math.round((received / total) * 100));
-        }
-      }
-
-      // Assemble blob and trigger download
-      const blob = new Blob(chunks, { type: 'application/octet-stream' });
-      triggerDownload(blob, fileName);
-      onProgress?.(100);
-      resolve();
-    } catch (err: any) {
-      reject(new Error(err.message || 'Download failed'));
-    }
+    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.send();
   });
 }
 
-function triggerDownload(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+/**
+ * Download multiple files sequentially (one by one) with individual progress.
+ * onProgress receives (currentIndex, totalCount, fileName, filePercent).
+ */
+export async function downloadFiles(
+  files: { id: number; name: string }[],
+  onProgress?: (idx: number, total: number, name: string, pct: number) => void,
+): Promise<void> {
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    onProgress?.(i + 1, files.length, f.name, 0);
+    await downloadFile(f.id, f.name, (pct) => {
+      onProgress?.(i + 1, files.length, f.name, pct);
+    });
+    onProgress?.(i + 1, files.length, f.name, 100);
+  }
 }
 
 export const createShare = (p: { fileId: number; password?: string; expiresIn?: number }) => req<{ ok: boolean; code: string; url: string }>('/api/shares', { method: 'POST', body: JSON.stringify(p) });
@@ -245,3 +204,21 @@ export const deleteShare = (code: string) => req<{ ok: boolean }>(`/api/shares/$
 export const fetchAllShares = () => req<{ shares: any[] }>('/api/shares/list-all');
 export const updateShare = (code: string, p: { password?: string; expiresIn?: number }) =>
   req<{ ok: boolean }>(`/api/shares/${code}`, { method: 'PUT', body: JSON.stringify(p) });
+
+export const transferFromUrl = (p: { url: string; topicId: number; name?: string; folderId?: number | null }) =>
+  req<{ ok: boolean; fileId: number }>('/api/transfer', { method: 'POST', body: JSON.stringify(p) });
+
+// ───── Folders ─────
+export const fetchFolders = (topicId: number, parentId?: number | null) => {
+  let path = `/api/folders?topicId=${topicId}`;
+  if (parentId !== undefined) path += `&parentId=${parentId ?? ''}`;
+  return req<{ folders: any[] }>(path);
+};
+export const createFolderApi = (topicId: number, name: string, parentId?: number | null) =>
+  req<{ ok: boolean; folder: any }>('/api/folders', { method: 'POST', body: JSON.stringify({ topicId, name, parentId: parentId ?? null }) });
+export const renameFolderApi = (id: number, name: string) =>
+  req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+export const deleteFolderApi = (id: number, topicId: number) =>
+  req<{ ok: boolean }>(`/api/folders/${id}?topicId=${topicId}`, { method: 'DELETE' });
+export const fetchFolderPath = (id: number) =>
+  req<{ path: { id: number; name: string }[] }>(`/api/folders/${id}/path`);

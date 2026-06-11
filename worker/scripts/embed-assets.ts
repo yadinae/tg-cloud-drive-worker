@@ -3,7 +3,7 @@
  * Run AFTER `npm run build` in frontend/.
  * Generates src/frontend-assets.ts with inline content strings.
  */
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -14,15 +14,7 @@ const outFile = resolve(__dirname, '../src/frontend-assets.ts');
 // Read built files
 const indexHtml = readFileSync(resolve(distDir, 'index.html'), 'utf-8');
 
-// Find the JS asset
-const assetFiles = readFileSync(resolve(distDir, 'assets'), 'utf-8')
-  .split('\n')
-  .filter(Boolean)
-  .map(f => f.split(/\s+/).pop())
-  .filter(Boolean);
-
-// We need to use fs.readdirSync instead
-import { readdirSync } from 'fs';
+// Find the JS asset in assets/ directory
 const assets = readdirSync(resolve(distDir, 'assets'));
 let mainJs = '';
 let mainJsName = '';

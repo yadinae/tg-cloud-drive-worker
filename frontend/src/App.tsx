@@ -1,43 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFiles, deleteFile, renameFile, moveFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFileWithProgress, fetchFolders, createFolder, renameFolder, deleteFolder } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath } from './api/client';
+import { c, s, st } from './design-tokens';
 
 type View = 'login' | 'drive';
+
 type ShareCategory = 'active' | 'expiring' | 'expired';
 
 interface Topic { topicId: number; name: string; fileCount: number; createdAt: number; }
 interface DriveFile { id: number; topicId: number; folderId: number | null; name: string; size: number; mimeType: string; chunkCount: number; createdAt: number; }
 interface ShareLink { code: string; fileId: number; fileName: string; fileSize: number; hasPassword: boolean; password: string | null; expiresAt: number | null; downloadCount: number; createdAt: number; }
-interface FolderEntry { id: number; topicId: number; parentId: number | null; name: string; fileCount: number; createdAt: number; }
-
-interface UploadTask {
-  id: string;
-  fileName: string;
-  fileSize: number;
-  progress: number;
-  status: 'pending' | 'uploading' | 'done' | 'error';
-  error?: string;
-}
+interface Folder { id: number; topicId: number; parentId: number | null; name: string; fileCount: number; createdAt: number; }
 
 function formatBytes(b: number): string {
   if (!b || b <= 0) return '0 B';
   const k = 1024, sizes = ['B','KB','MB','GB','TB'];
   const i = Math.floor(Math.log(b) / Math.log(k));
   return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return '1s';
-  const s = Math.round(ms / 1000);
-  if (s < 60) return s + 's';
-  const m = Math.floor(s / 60);
-  return `${m}m ${s % 60}s`;
-}
-
-function formatTime(sec: number): string {
-  if (!sec || !isFinite(sec)) return '0:00';
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 // ─── Login ───
@@ -56,17 +34,17 @@ function Login({ onLogin }: { onLogin: () => void }) {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a', color: '#e2e8f0' }}>
-      <form onSubmit={handleSubmit} style={{ background: '#1e293b', padding: '2rem', borderRadius: 12, width: '100%', maxWidth: 380 }}>
-        <h1 style={{ margin: '0 0 .5rem', color: '#38bdf8', fontSize: '1.5rem' }}>☁️ TG Cloud Drive</h1>
-        <p style={{ color: '#94a3b8', margin: '0 0 1.5rem', fontSize: '.875rem' }}>Enter your access token to continue</p>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font }}>
+      <form onSubmit={handleSubmit} style={{ background: '#1a1a1a', padding: '2rem', borderRadius: 12, width: '100%', maxWidth: 380 }}>
+        <h1 style={{ margin: '0 0 .5rem', color: '#faff69', fontSize: '1.5rem' }}>☁️ TG Cloud Drive</h1>
+        <p style={{ color: '#888888', margin: '0 0 1.5rem', fontSize: '.875rem' }}>Enter your access token to continue</p>
         <input
           type="password" placeholder="Access Token" value={token}
           onChange={e => setToken(e.target.value)}
-          style={{ width: '100%', padding: '.75rem', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }}
+          style={{ width: '100%', padding: '.75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }}
         />
         {err && <p style={{ color: '#f87171', fontSize: '.875rem', marginTop: '.5rem' }}>{err}</p>}
-        <button type="submit" disabled={loading || !token.trim()} style={{ width: '100%', marginTop: '1rem', padding: '.75rem', borderRadius: 8, border: 'none', background: '#38bdf8', color: '#0f172a', fontSize: '1rem', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? .7 : 1 }}>
+        <button type="submit" disabled={loading || !token.trim()} style={{ width: '100%', marginTop: '1rem', padding: '.75rem', borderRadius: 8, border: 'none', background: '#faff69', color: '#0a0a0a', fontSize: '1rem', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? .7 : 1 }}>
           {loading ? 'Verifying...' : 'Sign In'}
         </button>
       </form>
@@ -75,18 +53,17 @@ function Login({ onLogin }: { onLogin: () => void }) {
 }
 
 // ─── Share Manager Modal ───
-function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void }) {
+function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onClose: () => void; onShareCreated?: () => void }) {
   const [shares, setShares] = useState<ShareLink[]>([]);
   const [password, setPassword] = useState('');
   const [expiresIn, setExpiresIn] = useState(0);
   const [creating, setCreating] = useState(false);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
-  const [pwLength, setPwLength] = useState<4 | 6>(4);
+  const [passwordLength, setPasswordLength] = useState(4);
 
-  const genPassword = () => {
-    const digits = '0123456789';
+  const generatePassword = (len: number) => {
     let pwd = '';
-    for (let i = 0; i < pwLength; i++) pwd += digits[Math.floor(Math.random() * digits.length)];
+    for (let i = 0; i < len; i++) pwd += Math.floor(Math.random() * 10).toString();
     setPassword(pwd);
   };
 
@@ -101,8 +78,9 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
     setCreating(true);
     await createShare({ fileId: file.id, password: password || undefined, expiresIn: expiresIn || undefined });
     setPassword(''); setExpiresIn(0);
-    await load();
+    await Promise.all([load(), onShareCreated?.()]);
     setCreating(false);
+    onClose();
   };
 
   const handleDelete = async (code: string) => {
@@ -111,25 +89,22 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-      <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h2 style={{ margin: 0, color: '#e2e8f0', fontSize: '1.125rem' }}>🔗 Share — {file.name}</h2>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
+          <h2 style={{ margin: 0, color: '#ffffff', fontSize: '1.125rem' }}>🔗 Share — {file.name}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888888', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
         </div>
 
         <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 200, display: 'flex', gap: '.25rem', alignItems: 'center' }}>
-            <input type="text" placeholder="Password (optional)" value={password} onChange={e => setPassword(e.target.value)}
-              style={{ flex: 1, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem', minWidth: 100 }} />
-            <div style={{ display: 'flex', gap: '2px', flexShrink: 0 }}>
-              <button onClick={() => setPwLength(4)} style={{ padding: '.35rem .45rem', borderRadius: '4px 0 0 4px', border: '1px solid #334155', background: pwLength === 4 ? '#38bdf8' : '#1e293b', color: pwLength === 4 ? '#0f172a' : '#94a3b8', cursor: 'pointer', fontSize: '.7rem', lineHeight: 1, fontWeight: 600 }}>4位</button>
-              <button onClick={() => setPwLength(6)} style={{ padding: '.35rem .45rem', borderRadius: '0 4px 4px 0', border: '1px solid #334155', background: pwLength === 6 ? '#38bdf8' : '#1e293b', color: pwLength === 6 ? '#0f172a' : '#94a3b8', cursor: 'pointer', fontSize: '.7rem', lineHeight: 1, fontWeight: 600 }}>6位</button>
-            </div>
-            <button onClick={genPassword} style={{ padding: '.35rem .6rem', borderRadius: 6, border: 'none', background: '#7c3aed', color: '#fff', cursor: 'pointer', fontSize: '.75rem', fontWeight: 600, whiteSpace: 'nowrap' }}>🔑 生成</button>
-          </div>
+          <input type="text" placeholder="Password (optional)" value={password} onChange={e => setPassword(e.target.value)}
+            style={{ flex: 1, minWidth: 80, padding: '.5rem', borderRadius: 6, border: '1px solid #242424', background: '#121212', color: '#cccccc', fontSize: '.875rem' }} />
+            <button onClick={() => { setPasswordLength(4); generatePassword(4); }} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #242424', background: passwordLength === 4 ? '#242424' : 'transparent', color: passwordLength === 4 ? '#faff69' : '#5a5a5a', cursor: 'pointer', fontSize: '.75rem', fontWeight: 600 }}>4位</button>
+            <button onClick={() => { setPasswordLength(6); generatePassword(6); }} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #242424', background: passwordLength === 6 ? '#242424' : 'transparent', color: passwordLength === 6 ? '#faff69' : '#5a5a5a', cursor: 'pointer', fontSize: '.75rem', fontWeight: 600 }}>6位</button>
+            <button onClick={() => generatePassword(passwordLength)} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #242424', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>🔑生成</button>
+
           <select value={expiresIn} onChange={e => setExpiresIn(Number(e.target.value))}
-            style={{ padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem' }}>
+            style={{ padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem' }}>
             <option value={0}>No expiry</option>
             <option value={3600}>1 hour</option>
             <option value={21600}>6 hours</option>
@@ -138,17 +113,17 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
             <option value={604800}>7 days</option>
             <option value={2592000}>30 days</option>
           </select>
-          <button onClick={handleCreate} disabled={creating} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer' }}>
+          <button onClick={handleCreate} disabled={creating} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', transition: '150ms ease' }}>
             {creating ? '...' : 'Create'}
           </button>
         </div>
 
         {shares.length === 0 ? (
-          <p style={{ color: '#94a3b8', textAlign: 'center', padding: '2rem 0' }}>No share links yet</p>
+          <p style={{ color: '#888888', textAlign: 'center', padding: '2rem 0' }}>No share links yet</p>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.875rem' }}>
             <thead>
-              <tr style={{ color: '#94a3b8', borderBottom: '1px solid #334155' }}>
+              <tr style={{ color: '#888888', borderBottom: '1px solid #334155' }}>
                 <th style={{ textAlign: 'left', padding: '.5rem' }}>Link</th>
                 <th style={{ textAlign: 'left', padding: '.5rem' }}>Password</th>
                 <th style={{ textAlign: 'center', padding: '.5rem' }}>Downloads</th>
@@ -161,27 +136,17 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
                 return (
                 <tr key={s.code} style={{ borderBottom: '1px solid #1e293b' }}>
                   <td style={{ padding: '.5rem' }}>
-                    <a href={s.expiresAt && Date.now() > s.expiresAt ? '#' : `/dl/${s.code}`} target="_blank" style={{ color: '#38bdf8', textDecoration: 'none' }}>
+                    <a href={s.expiresAt && Date.now() > s.expiresAt ? '#' : `/dl/${s.code}`} target="_blank" style={{ color: '#faff69', textDecoration: 'none' }}>
                       {s.code}
                     </a>
                     {s.expiresAt && Date.now() > s.expiresAt && <span style={{ color: '#f87171', marginLeft: '.5rem', fontSize: '.75rem' }}>expired</span>}
                   </td>
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
                     {s.hasPassword ? (
-                      s.password ? (
-                        <>
-                          <span>{spw ? s.password : '🔒'}</span>
-                          <button onClick={() => setShowPasswords({...showPasswords, [s.code]: !spw})}
-                            style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0 }}>
-                            {spw ? '🙈' : '👁️'}
-                          </button>
-                        </>
-                      ) : (
-                        <span title="Password set but cannot be displayed (legacy share)">🔒</span>
-                      )
+                        <span title="Password protected">🔒</span>
                     ) : <span>—</span>}
                   </td>
-                  <td style={{ textAlign: 'center', padding: '.5rem', color: '#94a3b8' }}>{s.downloadCount}</td>
+                  <td style={{ textAlign: 'center', padding: '.5rem', color: '#888888' }}>{s.downloadCount}</td>
                   <td style={{ textAlign: 'right', padding: '.5rem' }}>
                     <button onClick={() => handleDelete(s.code)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '.875rem' }}>Delete</button>
                   </td>
@@ -198,13 +163,13 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
 
 // ─── Share helper functions ───
 function formatExpiry(expiresAt: number | null): { label: string; color: string } {
-  if (!expiresAt) return { label: 'Never', color: '#64748b' };
+  if (!expiresAt) return { label: 'Never', color: c.mutedSoft };
   const remaining = expiresAt - Date.now();
-  if (remaining <= 0) return { label: 'Expired', color: '#f87171' };
-  const hours = Math.floor(remaining / 3600000);
-  if (hours < 1) return { label: Math.floor(remaining / 60000) + 'm', color: '#f97316' };
-  if (hours < 24) return { label: hours + 'h', color: '#f59e0b' };
-  return { label: Math.floor(hours / 24) + 'd', color: '#22c55e' };
+  if (remaining <= 0) return { label: 'Expired', color: c.danger };
+  const totalHours = remaining / 3600000;
+  if (totalHours < 1) return { label: Math.max(1, Math.round(totalHours * 60)) + 'm', color: '#f97316' };
+  if (totalHours < 23.5) return { label: Math.round(totalHours) + 'h', color: c.warning };
+  return { label: Math.round(totalHours / 24) + 'd', color: c.success };
 }
 
 function getCategory(share: ShareLink): ShareCategory {
@@ -229,79 +194,19 @@ const CATEGORY_META: Record<ShareCategory, { label: string; icon: string; color:
   expired: { label: 'Expired', icon: '❌', color: '#f87171' },
 };
 
-// ─── Preview Modal ───
-function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
-  const isVideo = file.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(file.name);
-  const isAudio = file.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a|wma)$/i.test(file.name);
-  const isImage = file.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(file.name);
-
-  // Close on Escape key
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
-  const src = getDlUrl(file.id);
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-      <div style={{ maxWidth: '92%', maxHeight: '92%', position: 'relative' }}>
-        <button onClick={onClose}
-          style={{ position: 'absolute', top: -36, right: 0, background: '#1e293b', border: 'none', color: '#e2e8f0', fontSize: '1.2rem', borderRadius: 6, padding: '.25rem .5rem', cursor: 'pointer', zIndex: 10 }}>
-          ✕ Close (Esc)
-        </button>
-        {isVideo && (
-          <video controls autoPlay style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8 }} src={src}>
-            Your browser does not support video playback.
-          </video>
-        )}
-        {isAudio && (
-          <div style={{ background: '#1e293b', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320 }}>
-            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎵</div>
-            <p style={{ color: '#e2e8f0', fontSize: '1rem', margin: '0 0 .5rem', wordBreak: 'break-all' }}>{file.name}</p>
-            <p style={{ color: '#94a3b8', fontSize: '.875rem', margin: '0 0 1.5rem' }}>{formatBytes(file.size)}</p>
-            <audio controls autoPlay style={{ width: '100%' }} src={src}>
-              Your browser does not support audio playback.
-            </audio>
-          </div>
-        )}
-        {isImage && (
-          <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={src} alt={file.name} />
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Dashboard ───
 function Dashboard() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [stats, setStats] = useState({ fileCount: 0, totalSize: 0, topicCount: 0 });
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [newTopicName, setNewTopicName] = useState('');
   const [shareFile, setShareFile] = useState<DriveFile | null>(null);
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [renaming, setRenaming] = useState<{ id: number; name: string; type: 'topic' | 'file' } | null>(null);
-
-  // Move file state
-  const [moveFileTarget, setMoveFileTarget] = useState<DriveFile | null>(null);
-
-  // Folder navigation state
-  const [currentFolders, setCurrentFolders] = useState<FolderEntry[]>([]);
-  const [currentFolder, setCurrentFolder] = useState<{ id: number; name: string } | null>(null);
-  const [folderStack, setFolderStack] = useState<Array<{ id: number; name: string }>>([]);
-  const [newFolderName, setNewFolderName] = useState('');
-  // Multi-file upload state
-  const [uploadQueue, setUploadQueue] = useState<UploadTask[]>([]);
-  const [showUploadPanel, setShowUploadPanel] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Download progress state (fileId -> progress %)
-  const [downloadProgress, setDownloadProgress] = useState<Record<number, number>>({});
+  const [renaming, setRenaming] = useState<{ id: number; name: string; type: 'topic' | 'file' | 'folder' } | null>(null);
 
   // Share management state
   const [shares, setShares] = useState<ShareLink[]>([]);
@@ -314,104 +219,36 @@ function Dashboard() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
-  const [uploadStartTime, setUploadStartTime] = useState<number>(0);
+  const [downloadProgress, setDownloadProgress] = useState<{ active: boolean; fileName?: string; pct: number; batch?: { current: number; total: number } }>({ active: false, pct: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragCounter = useRef(0);
+  const [transferUrl, setTransferUrl] = useState('');
+  const [transferName, setTransferName] = useState('');
+  const [transferring, setTransferring] = useState(false);
+  const [transferError, setTransferError] = useState('');
+  const [currentFolder, setCurrentFolder] = useState<number | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folderPath, setFolderPath] = useState<{ id: number; name: string }[]>([]);
+  const [newFolderName, setNewFolderName] = useState('');
 
-  // ─── Audio Player ───
+  // ─── Audio Player State ───
   const [audioQueue, setAudioQueue] = useState<DriveFile[]>([]);
-  const [audioIndex, setAudioIndex] = useState<number>(-1);
-  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [audioIndex, setAudioIndex] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const isAudioFile = (f: DriveFile) =>
-    f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a|wma)$/i.test(f.name);
-
-  const currentAudioFile = audioIndex >= 0 && audioIndex < audioQueue.length ? audioQueue[audioIndex] : null;
-
-  const handlePlayAudio = (file: DriveFile, contextFiles: DriveFile[]) => {
-    // Build queue from this file onwards (include all audio files after the clicked one)
-    const allAudio = contextFiles.filter(isAudioFile);
-    const startIdx = allAudio.findIndex(f => f.id === file.id);
-    if (startIdx < 0) {
-      setAudioQueue([file]);
-      setAudioIndex(0);
-    } else {
-      setAudioQueue(allAudio);
-      setAudioIndex(startIdx);
-    }
-    setIsAudioPlaying(true);
-  };
-
-  const handleAudioEnded = () => {
-    if (audioIndex < audioQueue.length - 1) {
-      setAudioIndex(prev => prev + 1);
-    } else {
-      setIsAudioPlaying(false);
-      setAudioIndex(-1);
-    }
-  };
-
-  const handlePrevTrack = () => {
-    if (audioIndex > 0) setAudioIndex(prev => prev - 1);
-    else { audioRef.current?.currentTime && (audioRef.current.currentTime = 0); }
-  };
-
-  const handleNextTrack = () => {
-    if (audioIndex < audioQueue.length - 1) setAudioIndex(prev => prev + 1);
-    else { setIsAudioPlaying(false); setAudioIndex(-1); }
-  };
-
-  const togglePlay = () => {
-    if (!audioRef.current) return;
-    if (audioRef.current.paused) { audioRef.current.play(); setIsAudioPlaying(true); }
-    else { audioRef.current.pause(); setIsAudioPlaying(false); }
-  };
-
-  // Control audio element when index changes
-  useEffect(() => {
-    if (!audioRef.current || audioIndex < 0 || !currentAudioFile) return;
-    const src = getDlUrl(currentAudioFile.id);
-    if (audioRef.current.src !== src) {
-      audioRef.current.src = src;
-      audioRef.current.load();
-    }
-    if (isAudioPlaying) {
-      audioRef.current.play().catch(() => {});
-    }
-  }, [audioIndex, currentAudioFile?.id]);
-
-  // Sync play state
-  useEffect(() => {
-    if (!audioRef.current || audioIndex < 0) return;
-    if (isAudioPlaying) audioRef.current.play().catch(() => {});
-    else audioRef.current.pause();
-  }, [isAudioPlaying]);
-
-  // Time update
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    const onTime = () => { setAudioProgress(el.currentTime); setAudioDuration(el.duration || 0); };
-    const onEnd = () => handleAudioEnded();
-    el.addEventListener('timeupdate', onTime);
-    el.addEventListener('ended', onEnd);
-    return () => { el.removeEventListener('timeupdate', onTime); el.removeEventListener('ended', onEnd); };
-  }, [audioQueue, audioIndex]);
+  const showAudioPlayer = audioIndex >= 0 && audioQueue.length > 0;
 
   const loadTopics = useCallback(async () => {
     const r = await fetchTopics();
     setTopics(r.topics);
   }, []);
 
-  const loadFiles = useCallback(async (topicId: number, folderId: number | null = null) => {
-    const r = await fetchFiles(topicId, folderId);
+  const loadFiles = useCallback(async (topicId: number, folderId?: undefined | number | null) => {
+    const folderParam = folderId === undefined ? undefined : (folderId === null ? '' : String(folderId));
+    const r = await fetchFiles(topicId, folderParam);
     setFiles(r.files);
-  }, []);
-
-  const loadFolders = useCallback(async (topicId: number, parentId: number | null = null) => {
-    const r = await fetchFolders(topicId, parentId);
-    setCurrentFolders(r.folders);
   }, []);
 
   const loadStats = useCallback(async () => {
@@ -428,6 +265,11 @@ function Dashboard() {
     setSharesLoading(false);
   }, []);
 
+  const loadFolders = useCallback(async (topicId: number, parentId?: number | null) => {
+    const r = await fetchFolders(topicId, parentId);
+    setFolders(r.folders);
+  }, []);
+
   const refresh = useCallback(() => {
     loadTopics();
     loadStats();
@@ -436,15 +278,6 @@ function Dashboard() {
   }, [currentTopic, loadTopics, loadFiles, loadStats]);
 
   useEffect(() => { loadTopics(); loadStats(); loadShares(); }, [loadTopics, loadStats, loadShares]);
-
-  // Escape key to close preview/upload panel
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setPreviewFile(null); setShowUploadPanel(false); }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
 
   const handleCreateTopic = async () => {
     if (!newTopicName.trim()) return;
@@ -464,127 +297,35 @@ function Dashboard() {
     if (renaming.type === 'topic') {
       await renameTopic(renaming.id, renaming.name.trim());
       await loadTopics();
+    } else if (renaming.type === 'folder') {
+      await renameFolderApi(renaming.id, renaming.name.trim());
+      if (currentTopic) await loadFolders(currentTopic.topicId, currentFolder);
     } else {
       await renameFile(renaming.id, renaming.name.trim());
-      if (currentTopic) await loadFiles(currentTopic.topicId);
+      if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
     }
     setRenaming(null);
   };
 
-  // ─── Multi-file upload ───
-  const handleFilesSelected = async (selectedFiles: FileList | File[]) => {
-    if (!currentTopic || selectedFiles.length === 0) return;
-
-    const tasks: UploadTask[] = Array.from(selectedFiles).map(f => ({
-      id: crypto.randomUUID(),
-      fileName: f.name,
-      fileSize: f.size,
-      progress: 0,
-      status: 'pending' as const,
-    }));
-    setUploadQueue(tasks);
-    setShowUploadPanel(true);
-    setUploadStartTime(Date.now());
-
-    await uploadFiles(
-      currentTopic.topicId,
-      Array.from(selectedFiles),
-      (index, pct, status, error) => {
-        setUploadQueue(prev => prev.map((t, i) =>
-          i === index ? { ...t, progress: pct, status: status === 'error' ? 'error' : status === 'done' ? 'done' : 'uploading', error } : t
-        ));
-      },
-      currentFolder?.id ?? null,
-      async () => {
-        await loadFiles(currentTopic.topicId, currentFolder?.id ?? null);
-        await loadTopics();
-        loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileInput = e.target;
+    if (!fileInput.files || !fileInput.files.length || !currentTopic) return;
+    const fileList = Array.from(fileInput.files);
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      for (let idx = 0; idx < fileList.length; idx++) {
+        const file = fileList[idx];
+        await uploadFile(currentTopic.topicId, file, (pct) => setUploadProgress(Math.round(((idx * 100 + pct) / fileList.length))), currentFolder);
       }
-    );
-  };
-
-  const handleUploadClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  // ─── Folder navigation ───
-  const handleEnterFolder = (folder: FolderEntry) => {
-    if (!currentTopic) return;
-    setFolderStack(prev => [...prev, { id: folder.id, name: folder.name }]);
-    setCurrentFolder({ id: folder.id, name: folder.name });
-    loadFolders(currentTopic.topicId, folder.id);
-    loadFiles(currentTopic.topicId, folder.id);
-  };
-
-  const handleFolderUp = () => {
-    if (!currentTopic) return;
-    if (folderStack.length <= 1) {
-      // Back to topic root
-      setFolderStack([]);
-      setCurrentFolder(null);
-      loadFolders(currentTopic.topicId, null);
-      loadFiles(currentTopic.topicId, null);
-    } else {
-      const newStack = folderStack.slice(0, -1);
-      const parent = newStack[newStack.length - 1] || null;
-      setFolderStack(newStack);
-      setCurrentFolder(parent);
-      loadFolders(currentTopic.topicId, parent?.id ?? null);
-      loadFiles(currentTopic.topicId, parent?.id ?? null);
-    }
-  };
-
-  const handleCreateFolder = async () => {
-    if (!currentTopic || !newFolderName.trim()) return;
-    try {
-      await createFolder(currentTopic.topicId, newFolderName.trim(), currentFolder?.id ?? null);
-      setNewFolderName('');
-      loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
+      await loadFiles(currentTopic.topicId, currentFolder);
+      await loadTopics();
     } catch (err: any) {
-      alert('Create folder failed: ' + err.message);
+      alert('Upload failed: ' + err.message);
     }
-  };
-
-  const handleDeleteFolder = async (folderId: number) => {
-    await deleteFolder(folderId);
-    if (currentTopic) loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
-  };
-
-  const handleRenameFolder = async (folderId: number, newName: string) => {
-    await renameFolder(folderId, newName);
-    if (currentTopic) loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
-  };
-
-  // ─── Drag & Drop ───
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOver(true); };
-  const handleDragLeave = (e: React.DragEvent) => {
-    // Only set false if actually leaving the drop zone (not entering a child)
-    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDragOver(false);
-    }
-  };
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    if (e.dataTransfer.files.length > 0) {
-      handleFilesSelected(e.dataTransfer.files);
-    }
-  };
-
-  // ─── Custom Download with Progress ───
-  const handleDownload = async (f: DriveFile) => {
-    setDownloadProgress(prev => ({ ...prev, [f.id]: 0 }));
-    try {
-      await downloadFileWithProgress(f.id, f.name, (pct) => {
-        setDownloadProgress(prev => ({ ...prev, [f.id]: pct }));
-      });
-    } catch (err: any) {
-      alert('Download failed: ' + err.message);
-    }
-    // Remove progress after a moment
-    setTimeout(() => {
-      setDownloadProgress(prev => { const n = { ...prev }; delete n[f.id]; return n; });
-    }, 2000);
+    setUploading(false);
+    setUploadProgress(0);
+    fileInput.value = '';
   };
 
   const handleDeleteFile = async (id: number) => {
@@ -593,21 +334,170 @@ function Dashboard() {
     await loadStats();
   };
 
-  const handleMoveFile = async (fileId: number, targetTopicId: number) => {
+  // ─── File Move ───
+  const [moveFile, setMoveFile] = useState<DriveFile | null>(null);
+  const [moveTargetFolder, setMoveTargetFolder] = useState<number | null>(null);
+  const [moveTargetFolders, setMoveTargetFolders] = useState<Folder[]>([]);
+  const [moveTopicId, setMoveTopicId] = useState<number | null>(null);
+
+  const handleOpenMove = async (f: DriveFile) => {
+    setMoveFile(f);
+    setMoveTopicId(f.topicId);
+    setMoveTargetFolder(f.folderId);
+    setMoveTargetFolders([]);
     try {
-      await moveFile(fileId, targetTopicId);
-      if (currentTopic) await loadFiles(currentTopic.topicId);
-      await loadTopics();
+      const r = await fetchFolders(f.topicId);
+      // Filter out the current file's folder from choices
+      const allFolders = (r.folders || []).filter((folder: Folder) => folder.id !== f.folderId);
+      setMoveTargetFolders(allFolders);
+    } catch (err: any) {
+      alert('Failed to load folders: ' + (err.message || 'unknown error'));
+      setMoveTargetFolders([]);
+    }
+  };
+
+  const handleConfirmMove = async () => {
+    if (!moveFile || moveTopicId === null) return;
+    try {
+      const res = await fetch('/api/files/' + moveFile.id + '/move', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('tgcd_auth_token') },
+        body: JSON.stringify({ topicId: moveTopicId, folderId: moveTargetFolder }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Move failed');
+      setMoveFile(null);
+      if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
     } catch (err: any) {
       alert('Move failed: ' + err.message);
     }
-    setMoveFileTarget(null);
   };
-
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     const r = await searchFiles(searchQuery);
     setFiles(r.files);
+  };
+
+  const handleFolderClick = async (folder: Folder) => {
+    setCurrentFolder(folder.id);
+    if (folder.parentId === null) setFolderPath([{ id: folder.id, name: folder.name }]);
+    else { try { const r = await fetchFolderPath(folder.id); setFolderPath(r.path); } catch { setFolderPath([{ id: folder.id, name: folder.name }]); } }
+    await Promise.all([loadFiles(folder.topicId, folder.id), loadFolders(folder.topicId, folder.id)]);
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim() || !currentTopic) return;
+    await createFolderApi(currentTopic.topicId, newFolderName.trim(), currentFolder);
+    setNewFolderName('');
+    await loadFolders(currentTopic.topicId, currentFolder);
+  };
+
+  const handleDeleteFolder = async (folderId: number) => {
+    if (!currentTopic) return;
+    await deleteFolderApi(folderId, currentTopic.topicId);
+    if (currentFolder === folderId) { setCurrentFolder(null); setFolderPath([]); await loadFiles(currentTopic.topicId, null); }
+    await loadFolders(currentTopic.topicId, currentFolder);
+  };
+
+  const handleBreadcrumb = async (folderId: number | null, idx: number) => {
+    if (!currentTopic) return;
+    if (folderId === null) { setCurrentFolder(null); setFolderPath([]); }
+    else { setCurrentFolder(folderId); setFolderPath(folderPath.slice(0, idx + 1)); }
+    await Promise.all([loadFiles(currentTopic.topicId, folderId), loadFolders(currentTopic.topicId, folderId)]);
+  };
+
+  const handleTransfer = async () => {
+    if (!transferUrl.trim() || !currentTopic) return;
+    setTransferring(true); setTransferError('');
+    try {
+      await transferFromUrl({ url: transferUrl.trim(), topicId: currentTopic.topicId, name: transferName.trim() || undefined, folderId: currentFolder });
+      setTransferUrl(''); setTransferName('');
+      await loadFiles(currentTopic.topicId, currentFolder); await loadStats();
+    } catch (e: any) { setTransferError(e.message || 'Transfer failed'); }
+    setTransferring(false);
+  };
+
+  const handleDownloadSingle = async (f: DriveFile) => {
+    setDownloadProgress({ active: true, fileName: f.name, pct: 0 });
+    try { await downloadFile(f.id, f.name, (pct) => setDownloadProgress(prev => ({ ...prev, pct }))); }
+    catch (err: any) { alert('Download failed: ' + err.message); }
+    setDownloadProgress({ active: false, pct: 0 });
+  };
+
+  const handleDownloadAll = async () => {
+    if (files.length === 0) return;
+    setDownloadProgress({ active: true, batch: { current: 0, total: files.length }, pct: 0 });
+    try {
+      await downloadFiles(files.map(f => ({ id: f.id, name: f.name })), (current, total, name, pct) => setDownloadProgress({ active: true, fileName: name, pct, batch: { current, total } }));
+    } catch (err: any) { alert('Batch download failed: ' + err.message); }
+    setDownloadProgress({ active: false, pct: 0 });
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounter.current++; if (e.dataTransfer.items && e.dataTransfer.items.length > 0) setDragging(true); };
+  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounter.current--; if (dragCounter.current <= 0) { dragCounter.current = 0; setDragging(false); } };
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); };
+  const handleDropFiles = async (fileList: FileList) => {
+    if (!fileList.length || !currentTopic) return;
+    setUploading(true); setUploadProgress(0);
+    try {
+      for (let i = 0; i < fileList.length; i++) {
+        await uploadFile(currentTopic.topicId, fileList[i], (pct) => setUploadProgress(Math.round(((i * 100 + pct) / fileList.length))), currentFolder);
+      }
+      await loadFiles(currentTopic.topicId, currentFolder); await loadTopics();
+    } catch (err: any) { alert('Upload failed: ' + err.message); }
+    setUploading(false); setUploadProgress(0);
+  };
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setDragging(false); dragCounter.current = 0; if (e.dataTransfer.files && e.dataTransfer.files.length > 0) handleDropFiles(e.dataTransfer.files); };
+
+  // ─── Audio Player ───
+  useEffect(() => {
+    const audioFiles = files.filter(f => f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name));
+    if (audioFiles.length === 0) {
+      setAudioQueue([]);
+      return;
+    }
+    // Never auto-start — user clicks ▶ to play
+    setAudioQueue(audioFiles);
+  }, [files]);
+
+  const audioHandlers = {
+    play(idx: number) {
+      if (idx < 0 || idx >= audioQueue.length) return;
+      setAudioIndex(idx);
+      setIsPlaying(true);
+    },
+    togglePlay() {
+      if (!audioRef.current) return;
+      if (audioRef.current.paused) { audioRef.current.play(); setIsPlaying(true); }
+      else { audioRef.current.pause(); setIsPlaying(false); }
+    },
+    next() {
+      const nextIdx = audioIndex + 1 < audioQueue.length ? audioIndex + 1 : 0;
+      audioHandlers.play(nextIdx);
+    },
+    prev() {
+      const prevIdx = audioIndex - 1 >= 0 ? audioIndex - 1 : audioQueue.length - 1;
+      audioHandlers.play(prevIdx);
+    },
+    seek(e: React.MouseEvent<HTMLDivElement>) {
+      if (!audioRef.current || !audioDuration) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      audioRef.current.currentTime = pct * audioDuration;
+    },
+    onTimeUpdate() {
+      if (audioRef.current) setAudioProgress(audioRef.current.currentTime);
+    },
+    onLoadedMetadata() {
+      if (audioRef.current) setAudioDuration(audioRef.current.duration);
+    },
+    onEnded() { audioHandlers.next(); },
+  };
+
+  const formatTime = (t: number) => {
+    if (!t || !isFinite(t)) return '0:00';
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
   // ─── Share handlers ───
@@ -651,7 +541,7 @@ function Dashboard() {
   };
 
   const shareCategories = [
-    { key: 'all' as const, label: 'All', icon: '📋', color: '#38bdf8' },
+    { key: 'all' as const, label: 'All', icon: '📋', color: '#faff69' },
     { key: 'active' as ShareCategory, ...CATEGORY_META.active },
     { key: 'expiring' as ShareCategory, ...CATEGORY_META.expiring },
     { key: 'expired' as ShareCategory, ...CATEGORY_META.expired },
@@ -665,6 +555,7 @@ function Dashboard() {
   const filteredShares = !activeCategory || activeCategory === 'all'
     ? shares : shares.filter(s => getCategory(s) === activeCategory);
 
+  // Reset file view when clicking share section
   const handleCategoryClick = (cat: typeof activeCategory) => {
     setActiveCategory(cat);
     setCurrentTopic(null);
@@ -675,14 +566,9 @@ function Dashboard() {
     setActiveCategory(null);
     setCurrentTopic(topic);
     setCurrentFolder(null);
-    setFolderStack([]);
-    if (topic) {
-      loadFiles(topic.topicId, null);
-      loadFolders(topic.topicId, null);
-    } else {
-      setFiles([]);
-      setCurrentFolders([]);
-    }
+    setFolderPath([]);
+    if (topic) { loadFiles(topic.topicId, null); loadFolders(topic.topicId, null); }
+    else setFiles([]);
   };
 
   const fileIcon = (name: string) => {
@@ -690,7 +576,7 @@ function Dashboard() {
     const icons: Record<string, string> = {
       png:'🖼️',jpg:'🖼️',jpeg:'🖼️',gif:'🖼️',webp:'🖼️',svg:'🖼️',
       mp4:'🎬',mkv:'🎬',mov:'🎬',webm:'🎬',
-      mp3:'🎵',wav:'🎵',flac:'🎵',ogg:'🎵',aac:'🎵',m4a:'🎵',wma:'🎵',
+      mp3:'🎵',wav:'🎵',flac:'🎵',
       pdf:'📕',doc:'📝',docx:'📝',txt:'📄',md:'📄',
       zip:'📦',rar:'📦','7z':'📦',tar:'📦',gz:'📦',
       js:'💻',ts:'💻',py:'💻',
@@ -699,25 +585,19 @@ function Dashboard() {
     return icons[ext] || '📁';
   };
 
-  const isMedia = (f: DriveFile) =>
-    f.mimeType?.startsWith('image/') || f.mimeType?.startsWith('video/') || f.mimeType?.startsWith('audio/') ||
-    /\.(png|jpg|jpeg|gif|webp|svg|mp4|webm|mkv|mov|mp3|wav|flac|ogg|aac|m4a|wma)$/i.test(f.name);
+  // Remove edit/delete buttons from topic items (one-click folders)
+  // Topics → first-level folders are read-only
 
-  const ac = (cat: string) => activeCategory === cat ? '#334155' : 'transparent';
-  const acCol = (cat: string) => activeCategory === cat ? '#e2e8f0' : '#94a3b8';
-
-  const uploadingCount = uploadQueue.filter(t => t.status === 'uploading' || t.status === 'pending').length;
-  const doneCount = uploadQueue.filter(t => t.status === 'done').length;
-  const errorCount = uploadQueue.filter(t => t.status === 'error').length;
-  const uploadElapsed = uploadStartTime > 0 ? formatDuration(Date.now() - uploadStartTime) : '';
+  const ac = (cat: string) => activeCategory === cat ? '#242424' : 'transparent';
+  const acCol = (cat: string) => activeCategory === cat ? '#ffffff' : '#888888';
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' }}>
+    <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
       {/* Header */}
       <header style={{ borderBottom: '1px solid #1e293b', padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: '1.25rem', color: '#38bdf8' }}>☁️ TG Cloud Drive</h1>
-          <p style={{ margin: '.25rem 0 0', fontSize: '.75rem', color: '#64748b' }}>
+          <h1 style={{ margin: 0, fontSize: '1.25rem', color: '#faff69' }}>☁️ TG Cloud Drive</h1>
+          <p style={{ margin: '.25rem 0 0', fontSize: '.75rem', color: '#5a5a5a' }}>
             {activeCategory ? `${getCategoryCount(activeCategory)} share links` : `${stats.fileCount} files · ${formatBytes(stats.totalSize)} · ${stats.topicCount} topics`}
           </p>
         </div>
@@ -725,13 +605,13 @@ function Dashboard() {
           {!activeCategory && (<>
             <input type="text" placeholder="Search files..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              style={{ padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.875rem', width: 200, outline: 'none' }} />
-            <button onClick={handleSearch} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer' }}>🔍</button>
+              style={{ padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #334155', background: '#1a1a1a', color: '#ffffff', fontSize: '.875rem', width: 200, outline: 'none' }} />
+            <button onClick={handleSearch} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1a1a1a', color: '#888888', cursor: 'pointer' }}>🔍</button>
           </>)}
           {activeCategory && (
-            <button onClick={() => loadShares()} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.875rem' }}>🔄</button>
+            <button onClick={() => loadShares()} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: '#1a1a1a', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>🔄</button>
           )}
-          <button onClick={() => { logout(); window.location.reload(); }} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}>Logout</button>
+          <button onClick={() => { logout(); window.location.reload(); }} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer' }}>Logout</button>
         </div>
       </header>
 
@@ -740,68 +620,49 @@ function Dashboard() {
         <aside style={{ width: 260, borderRight: '1px solid #1e293b', padding: '1rem', overflow: 'auto', flexShrink: 0 }}>
           {/* ─── TOPICS ─── */}
           <div style={{ marginBottom: '1rem' }}>
-            <h3 style={{ margin: '0 0 .5rem', fontSize: '.75rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '.05em' }}>Topics</h3>
+            <h3 style={{ margin: '0 0 .5rem', fontSize: '.75rem', color: '#5a5a5a', textTransform: 'uppercase', letterSpacing: '.05em' }}>Topics</h3>
             <button
               onClick={() => handleTopicClick(null)}
-              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: !currentTopic && !activeCategory ? '#334155' : 'transparent', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem', marginBottom: '.25rem' }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: !currentTopic && !activeCategory ? '#242424' : 'transparent', color: '#ffffff', cursor: 'pointer', fontSize: '.875rem', marginBottom: '.25rem' }}
             >📂 All Topics</button>
             {topics.map(t => (
               <div key={t.topicId} style={{ display: 'flex', alignItems: 'center', marginBottom: '.25rem' }}>
                 <button
                   onClick={() => handleTopicClick(t)}
-                  style={{ flex: 1, textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: currentTopic?.topicId === t.topicId ? '#334155' : 'transparent', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem' }}
-                >📁 {t.name} <span style={{ color: '#64748b', fontSize: '.75rem' }}>({t.fileCount})</span></button>
+                  style={{ flex: 1, textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: currentTopic?.topicId === t.topicId ? '#242424' : 'transparent', color: '#ffffff', cursor: 'pointer', fontSize: '.875rem' }}
+                >📁 {t.name} <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>({t.fileCount})</span></button>
+                {/* No edit/delete buttons for topics (read-only) */}
               </div>
             ))}
             <div style={{ display: 'flex', gap: '.25rem', marginTop: '.5rem' }}>
               <input type="text" placeholder="New topic..." value={newTopicName} onChange={e => setNewTopicName(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleCreateTopic()}
-                style={{ flex: 1, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.875rem', outline: 'none' }} />
-              <button onClick={handleCreateTopic} style={{ padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', cursor: 'pointer', fontWeight: 600 }}>+</button>
+                style={{ flex: 1, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#1a1a1a', color: '#ffffff', fontSize: '.875rem', outline: 'none' }} />
+              <button onClick={handleCreateTopic} style={{ padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', cursor: 'pointer', fontWeight: 600 }}>+</button>
             </div>
           </div>
 
           {/* ─── SHARE LINKS ─── */}
           <div style={{ borderTop: '1px solid #334155', paddingTop: '1rem' }}>
-            <h3 style={{ margin: '0 0 .5rem', fontSize: '.75rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '.05em' }}>🔗 Share Links</h3>
+            <h3 style={{ margin: '0 0 .5rem', fontSize: '.75rem', color: '#5a5a5a', textTransform: 'uppercase', letterSpacing: '.05em' }}>🔗 Share Links</h3>
             {shareCategories.map(cat => (
               <button key={cat.key}
                 onClick={() => handleCategoryClick(cat.key)}
                 style={{ display: 'block', width: '100%', textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: ac(cat.key), color: acCol(cat.key), cursor: 'pointer', fontSize: '.875rem', marginBottom: '.25rem' }}>
-                {cat.icon} {cat.label} <span style={{ color: '#64748b', fontSize: '.75rem' }}>({getCategoryCount(cat.key)})</span>
+                {cat.icon} {cat.label} <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>({getCategoryCount(cat.key)})</span>
               </button>
             ))}
           </div>
         </aside>
 
         {/* ─── MAIN CONTENT ─── */}
-        <main style={{ flex: 1, padding: '1.5rem', overflow: 'auto', paddingBottom: currentAudioFile ? '64px' : '1.5rem' }}
-          onDragOver={currentTopic ? handleDragOver : undefined}
-          onDragLeave={currentTopic ? handleDragLeave : undefined}
-          onDrop={currentTopic ? handleDrop : undefined}
-        >
-          {/* Drag overlay */}
-          {dragOver && currentTopic && (
-            <div style={{
-              position: 'absolute', inset: 0, zIndex: 500,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(56, 189, 248, 0.12)',
-              border: '2px dashed #38bdf8', borderRadius: 12,
-              margin: '1.5rem', pointerEvents: 'none',
-            }}>
-              <div style={{ textAlign: 'center', color: '#38bdf8' }}>
-                <div style={{ fontSize: '3rem' }}>📁</div>
-                <p style={{ fontSize: '1.25rem', fontWeight: 600, margin: '.5rem 0 0' }}>Drop files here to upload</p>
-                <p style={{ fontSize: '.875rem', margin: '.25rem 0 0', color: '#7dd3fc' }}>to {currentTopic.name}</p>
-              </div>
-            </div>
-          )}
+        <main style={{ flex: 1, padding: '1.5rem', paddingBottom: showAudioPlayer ? '5rem' : '1.5rem', overflow: 'auto' }}>
 
           {/* ─── File list view ─── */}
           {!activeCategory && !currentTopic && (
             <div style={{ textAlign: 'center', padding: '4rem 0' }}>
-              <p style={{ color: '#64748b', fontSize: '1.125rem' }}>Select a topic to view files</p>
-              <p style={{ color: '#475569', fontSize: '.875rem', marginTop: '.5rem' }}>
+              <p style={{ color: '#5a5a5a', fontSize: '1.125rem' }}>Select a topic to view files</p>
+              <p style={{ color: '#5a5a5a', fontSize: '.875rem', marginTop: '.5rem' }}>
                 {stats.topicCount === 0 ? 'Create a topic to get started' : 'Or upload files to a topic'}
               </p>
             </div>
@@ -809,169 +670,105 @@ function Dashboard() {
 
           {!activeCategory && currentTopic && (
             <>
-              {/* Breadcrumb */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem', flexWrap: 'wrap', gap: '.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '.35rem', fontSize: '.9rem', color: '#94a3b8' }}>
-                  <span style={{ color: '#e2e8f0', fontWeight: 600 }}>📁 {currentTopic.name}</span>
-                  {folderStack.map((f, i) => (
-                    <span key={f.id} style={{ display: 'flex', alignItems: 'center', gap: '.35rem' }}>
-                      <span style={{ color: '#475569' }}>/</span>
-                      {i === folderStack.length - 1 ? (
-                        <span style={{ color: '#38bdf8' }}>{f.name}</span>
-                      ) : (
-                        <button onClick={() => {
-                          // Navigate to this level
-                          const newStack = folderStack.slice(0, i + 1);
-                          setFolderStack(newStack);
-                          const target = newStack[newStack.length - 1];
-                          setCurrentFolder(target);
-                          loadFolders(currentTopic.topicId, target.id);
-                          loadFiles(currentTopic.topicId, target.id);
-                        }} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '.9rem', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
-                          {f.name}
-                        </button>
-                      )}
-                    </span>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', gap: '.35rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <input ref={fileInputRef} type="file" multiple onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} />
-                  <input type="file" multiple {...{webkitdirectory: true} as any} onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} id="folder-upload" />
-                  {folderStack.length > 0 && (
-                    <button onClick={handleFolderUp} style={{ padding: '.35rem .65rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>⬆ Up</button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h2 style={{ margin: 0, fontSize: '1.125rem' }}>📁 {currentTopic.name}</h2>
+                <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                  <label style={{ padding: '.5rem 1rem', borderRadius: 6, background: uploading ? '#242424' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem' }}>
+                    {uploading ? `${uploadProgress}%` : `⬆ Upload${currentFolder !== null ? ' → 📁' : ''}`}
+                    <input type="file" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} multiple />
+                  </label>
+                  {uploading && (
+                    <div style={{ width: 100, height: 4, background: '#242424', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${uploadProgress}%`, height: '100%', background: '#faff69', borderRadius: 2, transition: 'width .2s' }} />
+                    </div>
                   )}
-                  <button onClick={() => document.getElementById('folder-upload')?.click()} style={{ padding: '.35rem .65rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>📁 Upload Folder</button>
-                  <button onClick={handleUploadClick} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>
-                    ⬆ Upload
-                  </button>
-                  <span style={{ fontSize: '.75rem', color: '#64748b' }}>or drag & drop</span>
                 </div>
               </div>
 
-              {/* Upload Queue Panel */}
-              {showUploadPanel && uploadQueue.length > 0 && (
-                <div style={{ marginBottom: '1rem', background: '#1e293b', borderRadius: 8, padding: '1rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' }}>
-                    <span style={{ fontSize: '.875rem', fontWeight: 600, color: '#e2e8f0' }}>
-                      Uploading {doneCount + uploadingCount}/{uploadQueue.length} files
-                      {uploadingCount > 0 && ` (${uploadElapsed})`}
-                    </span>
-                    <button onClick={() => setShowUploadPanel(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '.875rem' }}>
-                      {uploadingCount === 0 ? '✕' : 'Hide'}
-                    </button>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '.35rem' }}>
-                    {uploadQueue.map((task, i) => (
-                      <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.8rem' }}>
-                        <span style={{ width: 16, textAlign: 'center' }}>
-                          {task.status === 'done' ? '✅' : task.status === 'error' ? '❌' : task.status === 'uploading' ? '⬆️' : '⏳'}
-                        </span>
-                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: task.status === 'error' ? '#f87171' : '#e2e8f0' }}>
-                          {task.fileName}
-                        </span>
-                        <span style={{ color: '#64748b', width: 60, textAlign: 'right', fontSize: '.75rem' }}>
-                          {task.status === 'done' ? '100%' : task.status === 'error' ? task.error?.slice(0, 20) || 'Error' : `${task.progress}%`}
-                        </span>
-                        <div style={{ width: 80, height: 4, background: '#334155', borderRadius: 2, overflow: 'hidden' }}>
-                          <div style={{
-                            width: `${task.status === 'done' ? 100 : task.status === 'error' ? 0 : task.progress}%`,
-                            height: '100%',
-                            background: task.status === 'error' ? '#f87171' : '#38bdf8',
-                            borderRadius: 2,
-                            transition: 'width .2s',
-                          }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* New Folder Input */}
-              <div style={{ display: 'flex', gap: '.25rem', marginBottom: '.75rem' }}>
-                <input type="text" placeholder="New folder name..." value={newFolderName}
-                  onChange={e => setNewFolderName(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleCreateFolder()}
-                  style={{ flex: 1, maxWidth: 280, padding: '.4rem .6rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.8rem', outline: 'none' }} />
-                <button onClick={handleCreateFolder} style={{ padding: '.4rem .7rem', borderRadius: 6, border: 'none', background: '#475569', color: '#e2e8f0', cursor: 'pointer', fontSize: '.8rem' }}>📁 New Folder</button>
+              {/* Breadcrumb */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.75rem', fontSize: '.875rem' }}>
+                <button onClick={() => { if (!currentTopic) return; setCurrentFolder(null); setFolderPath([]); loadFiles(currentTopic.topicId, null); loadFolders(currentTopic.topicId, null); }}
+                  style={{ background: '#242424', border: 'none', borderRadius: 4, padding: '.25rem .5rem', color: currentFolder === null ? '#faff69' : '#888888', cursor: 'pointer', fontSize: '.8rem', fontWeight: currentFolder === null ? 600 : 400 }}>
+                  📂 {currentTopic?.name}
+                </button>
+                {folderPath.map((f, i) => (
+                  <span key={f.id} style={{ display: 'flex', alignItems: 'center', gap: '.25rem' }}>
+                    <span style={{ color: '#5a5a5a' }}>/</span>
+                    <button onClick={() => handleBreadcrumb(f.id, i)} style={{ background: 'none', border: 'none', color: currentFolder === f.id ? '#faff69' : '#888888', cursor: 'pointer', fontSize: '.8rem', fontWeight: currentFolder === f.id ? 600 : 400 }}>📁 {f.name}</button>
+                  </span>
+                ))}
               </div>
 
-              {currentFolders.length === 0 && files.length === 0 ? (
-                <div style={{
-                  textAlign: 'center', padding: '4rem 0', color: '#64748b',
-                  border: '2px dashed #334155', borderRadius: 12, marginTop: '1rem',
-                }}>
-                  <p style={{ fontSize: '3rem', margin: '0 0 .5rem' }}>📂</p>
-                  <p style={{ fontSize: '1.125rem' }}>This topic is empty</p>
-                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Create a folder, upload files, or drag & drop</p>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-                  {/* Folders */}
-                  {currentFolders.map(f => (
-                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.65rem 1rem', background: '#1e293b', borderRadius: 8, gap: '1rem', cursor: 'pointer' }}
-                      onClick={() => handleEnterFolder(f)}>
-                      <span style={{ fontSize: '1.25rem' }}>📁</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ margin: 0, fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</p>
-                        <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#64748b' }}>{f.fileCount} files</p>
-                      </div>
-                      <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-                        <button onClick={() => {
-                          const newName = prompt('Rename folder to:', f.name);
-                          if (newName && newName.trim()) handleRenameFolder(f.id, newName.trim());
-                        }} style={{ padding: '.3rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
-                        <button onClick={async () => {
-                          if (confirm(`Delete folder "${f.name}"? Files will be moved to parent.`)) await handleDeleteFolder(f.id);
-                        }} style={{ padding: '.3rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
+              {/* Folder Grid */}
+              {folders.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '.5rem', marginBottom: '1rem' }}>
+                  {folders.map(f => (
+                    <div key={f.id} onClick={() => handleFolderClick(f)}
+                      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '1rem .75rem', background: '#1a1a1a', borderRadius: 8, border: '1px solid #242424', cursor: 'pointer', transition: '150ms ease', gap: '.25rem' }}>
+                      <span style={{ fontSize: '2rem' }}>📁</span>
+                      <span style={{ fontSize: '.8rem', color: '#cccccc', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', whiteSpace: 'nowrap' }}>{f.name}</span>
+                      <span style={{ fontSize: '.7rem', color: '#5a5a5a' }}>{f.fileCount} files</span>
+                      <div style={{ display: 'flex', gap: '.25rem', marginTop: '.25rem' }}>
+                        <button onClick={(e) => { e.stopPropagation(); setRenaming({ id: f.id, name: f.name, type: 'folder' }); }}
+                          style={{ padding: '.2rem .4rem', borderRadius: 3, border: 'none', background: '#242424', color: '#888888', cursor: 'pointer', fontSize: '.7rem' }}>✎</button>
+                        <button onClick={(e) => { e.stopPropagation(); if (confirm('Delete folder "' + f.name + '"?')) handleDeleteFolder(f.id); }}
+                          style={{ padding: '.2rem .4rem', borderRadius: 3, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.7rem' }}>✕</button>
                       </div>
                     </div>
                   ))}
-                  {/* Files */}
+                </div>
+              )}
+
+              {/* Transfer + New Folder Bar */}
+              <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input type="text" placeholder="Paste a URL to transfer..." value={transferUrl} onChange={e => setTransferUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleTransfer()}
+                  style={{ flex: 1, minWidth: 160, padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #242424', background: '#121212', color: '#cccccc', fontSize: '.875rem', outline: 'none' }} disabled={transferring} />
+                <input type="text" placeholder="File name" value={transferName} onChange={e => setTransferName(e.target.value)}
+                  style={{ width: 110, padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #242424', background: '#121212', color: '#cccccc', fontSize: '.875rem', outline: 'none' }} disabled={transferring} />
+                <button onClick={handleTransfer} disabled={transferring || !transferUrl.trim()}
+                  style={{ padding: '.5rem .7rem', borderRadius: 6, border: 'none', background: transferring ? '#242424' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: transferring ? 'not-allowed' : 'pointer', fontSize: '.8rem', whiteSpace: 'nowrap', transition: '150ms ease' }}>
+                  {transferring ? '⌛' : '📥'}
+                </button>
+                <span style={{ width: 1, height: 28, background: '#2a2a2a' }} />
+                <input type="text" placeholder="New folder..." value={newFolderName} onChange={e => setNewFolderName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreateFolder()}
+                  style={{ width: 110, padding: '.5rem .5rem', borderRadius: 6, border: '1px solid #242424', background: '#121212', color: '#cccccc', fontSize: '.875rem', outline: 'none' }} />
+                <button onClick={handleCreateFolder} disabled={!newFolderName.trim()}
+                  style={{ padding: '.5rem .6rem', borderRadius: 6, border: 'none', background: newFolderName.trim() ? '#242424' : 'transparent', color: newFolderName.trim() ? '#faff69' : '#5a5a5a', cursor: newFolderName.trim() ? 'pointer' : 'not-allowed', fontSize: '.875rem' }}>+ 📁</button>
+              </div>
+              {transferError && <div style={{ color: '#f87171', fontSize: '.8rem', marginBottom: '1rem', padding: '.5rem .75rem', background: '#1a1a1a', borderRadius: 6, border: '1px solid rgba(248,113,113,.3)' }}>❌ {transferError}</div>}
+
+              {files.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '4rem 0', color: '#5a5a5a' }}>
+                  <p style={{ fontSize: '1.125rem' }}>This topic is empty</p>
+                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Upload a file to get started</p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: '.5rem' }}>
                   {files.map(f => (
-                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: '#1e293b', borderRadius: 8, gap: '1rem' }}>
+                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: '#1a1a1a', borderRadius: 8, gap: '1rem' }}>
                       <span style={{ fontSize: '1.25rem' }}>{fileIcon(f.name)}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <p style={{ margin: 0, fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</p>
-                        <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#64748b' }}>{formatBytes(f.size)}</p>
-                        {/* Download progress bar */}
-                        {downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 && (
-                          <div style={{ marginTop: '.25rem', display: 'flex', alignItems: 'center', gap: '.5rem' }}>
-                            <div style={{ flex: 1, height: 4, background: '#334155', borderRadius: 2, overflow: 'hidden' }}>
-                              <div style={{ width: `${downloadProgress[f.id]}%`, height: '100%', background: '#22c55e', borderRadius: 2, transition: 'width .2s' }} />
-                            </div>
-                            <span style={{ fontSize: '.7rem', color: '#22c55e' }}>⬇ {downloadProgress[f.id]}%</span>
-                          </div>
-                        )}
+                        <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#5a5a5a' }}>{formatBytes(f.size)}</p>
                       </div>
                       <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }}>
-                        {isMedia(f) && (
-                          <button onClick={() => {
-                            if (isAudioFile(f)) {
-                              handlePlayAudio(f, files);
-                            } else {
-                              setPreviewFile(f);
-                            }
-                          }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: currentAudioFile?.id === f.id ? '#7c3aed' : '#334155', color: currentAudioFile?.id === f.id ? '#fff' : '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>
-                            {currentAudioFile?.id === f.id ? (isAudioPlaying ? '⏸ Now Playing' : '▶️ Paused') :
-                             isAudioFile(f) ? '🎵 Play' :
-                             f.mimeType?.startsWith('video/') ? '🎬 Preview' : '🖼 Preview'}
-                          </button>
+                        {(f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp)$/i.test(f.name)) && (
+                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🖼 Preview</button>
                         )}
-                        <button onClick={() => handleDownload(f)}
-                          disabled={downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100}
-                          style={{
-                            padding: '.4rem .75rem', borderRadius: 6,
-                            background: downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? '#334155' : '#22c55e',
-                            color: '#0f172a', border: 'none', fontSize: '.75rem', fontWeight: 600,
-                            cursor: downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? 'not-allowed' : 'pointer',
-                          }}>
-                          {downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? `${downloadProgress[f.id]}%` : '⬇ Download'}
-                        </button>
-                        <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#334155', color: '#38bdf8', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
-                        <button onClick={() => setMoveFileTarget(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#334155', color: '#a78bfa', cursor: 'pointer', fontSize: '.75rem' }}>📂 Move</button>
-                        <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
-                        <button onClick={() => handleDeleteFile(f.id)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
+                        {(f.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(f.name)) && (
+                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🎬 Preview</button>
+                        )}
+                        {(f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name)) && (
+                          <button onClick={() => { audioHandlers.play(files.indexOf(f)); }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>▶ Play</button>
+                        )}
+                        <a href={getDlUrl(f.id)} download={f.name}
+                          style={{ padding: '.4rem .75rem', borderRadius: 6, background: '#242424', color: '#ffffff', textDecoration: 'none', fontSize: '.75rem' }}>
+                          ⬇ Download
+                        </a>
+                        <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
+                        <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#888888', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
+                        <button onClick={() => handleOpenMove(f)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>📂</button>
+                        <button onClick={() => handleDeleteFile(f.id)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
                       </div>
                     </div>
                   ))}
@@ -992,24 +789,24 @@ function Dashboard() {
               </div>
 
               {sharesLoading && (
-                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#64748b' }}>Loading...</div>
+                <div style={{ textAlign: 'center', padding: '3rem 0', color: '#5a5a5a' }}>Loading...</div>
               )}
 
               {!sharesLoading && filteredShares.length === 0 && (
-                <div style={{ textAlign: 'center', padding: '4rem 0', color: '#64748b' }}>
+                <div style={{ textAlign: 'center', padding: '4rem 0', color: '#5a5a5a' }}>
                   <p style={{ fontSize: '3rem', marginBottom: '.5rem' }}>🔗</p>
                   <p>No share links found</p>
-                  <p style={{ fontSize: '.875rem', marginTop: '.25rem', color: '#475569' }}>Share a file from a topic to create one</p>
+                  <p style={{ fontSize: '.875rem', marginTop: '.25rem', color: '#5a5a5a' }}>Share a file from a topic to create one</p>
                 </div>
               )}
 
               {!sharesLoading && filteredShares.length > 0 && (
-                <div style={{ background: '#1e293b', borderRadius: 12, border: '1px solid #1e293b', overflow: 'hidden' }}>
+                <div style={{ background: '#1a1a1a', borderRadius: 12, border: '1px solid #1e293b', overflow: 'hidden' }}>
                   {/* Table header */}
                   <div style={{
                     display: 'grid', gridTemplateColumns: '3fr 2fr 80px 70px 50px 80px',
-                    padding: '.75rem 1rem', background: '#334155', borderBottom: '1px solid #1e293b',
-                    fontSize: '.75rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase',
+                    padding: '.75rem 1rem', background: '#242424', borderBottom: '1px solid #1e293b',
+                    fontSize: '.75rem', fontWeight: 700, color: '#888888', textTransform: 'uppercase',
                     letterSpacing: '.05em',
                   }}>
                     <div>File</div>
@@ -1022,72 +819,61 @@ function Dashboard() {
 
                   {filteredShares.map(share => {
                     const expiry = formatExpiry(share.expiresAt);
-                    const showPw = showPasswords[share.code] || false;
-                    return (
+                                        return (
                       <div key={share.code} style={{
                         display: 'grid', gridTemplateColumns: '3fr 2fr 80px 70px 50px 80px',
                         gap: '.5rem', padding: '.75rem 1rem', alignItems: 'center',
                         borderBottom: '1px solid #334155', fontSize: '.875rem',
                       }}>
+                        {/* File */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', minWidth: 0 }}>
-                          <div style={{ width: 32, height: 32, borderRadius: 6, background: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '.75rem', flexShrink: 0 }}>📄</div>
+                          <div style={{ width: 32, height: 32, borderRadius: 6, background: '#242424', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '.75rem', flexShrink: 0 }}>📄</div>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{share.fileName}</div>
-                            <div style={{ fontSize: '.75rem', color: '#64748b' }}>{formatBytes(share.fileSize)}</div>
+                            <div style={{ fontSize: '.75rem', color: '#5a5a5a' }}>{formatBytes(share.fileSize)}</div>
                           </div>
                         </div>
 
+                        {/* Share Link */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '.25rem', minWidth: 0 }}>
                           <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ fontSize: '.75rem', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#38bdf8' }}>/dl/{share.code}</div>
-                            <div style={{ fontSize: '.7rem', color: '#64748b' }}>{new Date(share.createdAt).toLocaleString()}</div>
+                            <div style={{ fontSize: '.75rem', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#faff69' }}>/dl/{share.code}</div>
+                            <div style={{ fontSize: '.7rem', color: '#5a5a5a' }}>{new Date(share.createdAt).toLocaleString()}</div>
                           </div>
                           <button onClick={() => handleCopy(share.code)} style={{
                             flexShrink: 0, padding: '.25rem .5rem', borderRadius: 4,
-                            background: copiedCode === share.code ? '#22c55e' : '#38bdf8',
-                            color: '#0f172a', border: 'none', fontWeight: 600, cursor: 'pointer', fontSize: '.75rem',
+                            background: copiedCode === share.code ? '#22c55e' : '#faff69',
+                            color: '#0a0a0a', border: 'none', fontWeight: 600, cursor: 'pointer', fontSize: '.75rem',
                           }}>
                             {copiedCode === share.code ? 'Copied!' : 'Copy'}
                           </button>
                         </div>
 
+                        {/* Password */}
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
-                            share.password ? (
-                              <>
-                                <span style={{
-                                  maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis',
-                                  fontSize: showPw ? '.75rem' : '.8rem', fontFamily: showPw ? 'monospace' : 'inherit',
-                                  color: '#e2e8f0',
-                                }}>
-                                  {showPw ? share.password : '🔒'}
-                                </span>
-                                <button onClick={() => setShowPasswords({ ...showPasswords, [share.code]: !showPw })}
-                                  style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.75rem', padding: 0, lineHeight: 1 }}>
-                                  {showPw ? '🙈' : '👁️'}
-                                </button>
-                              </>
-                            ) : (
-                              <span style={{ color: '#94a3b8', fontSize: '.75rem', cursor: 'help' }} title="Password set (legacy share)">🔒</span>
-                            )
+                              <span style={{ color: '#ffffff', fontSize: '.8rem', cursor: 'help' }} title="Password protected">🔒</span>
                           ) : (
-                            <span style={{ color: '#64748b' }}>—</span>
+                            <span style={{ color: '#5a5a5a' }}>—</span>
                           )}
                         </div>
 
+                        {/* Expiry */}
                         <div style={{ textAlign: 'center' }}>
                           <span style={{ color: expiry.color, fontWeight: 500, fontSize: '.8rem' }}>{expiry.label}</span>
                         </div>
 
-                        <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '.8rem' }}>
+                        {/* Downloads */}
+                        <div style={{ textAlign: 'center', color: '#888888', fontSize: '.8rem' }}>
                           {share.downloadCount}
                         </div>
 
+                        {/* Actions */}
                         <div style={{ textAlign: 'right', display: 'flex', gap: '.25rem', justifyContent: 'flex-end' }}>
                           <button onClick={() => handleEditOpen(share)}
-                            style={{ padding: '.35rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.8rem', lineHeight: 1 }}>✏️</button>
+                            style={{ padding: '.35rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#888888', cursor: 'pointer', fontSize: '.8rem', lineHeight: 1 }}>✏️</button>
                           <button onClick={() => handleRevoke(share.code)}
-                            style={{ padding: '.35rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.8rem', lineHeight: 1 }}>🗑️</button>
+                            style={{ padding: '.35rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.8rem', lineHeight: 1 }}>🗑️</button>
                         </div>
                       </div>
                     );
@@ -1100,57 +886,168 @@ function Dashboard() {
       </div>
 
       {/* Share per-file modal */}
-      {shareFile && <ShareManager file={shareFile} onClose={() => { setShareFile(null); loadShares(); }} />}
+      {shareFile && <ShareManager file={shareFile} onClose={() => { setShareFile(null); loadShares(); }} onShareCreated={loadShares} />}
 
-      {/* Preview Modal — only closes via X button or Escape */}
-      {previewFile && <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />}
+      {/* Preview Modal */}
+      {previewFile && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setPreviewFile(null)}>
+          <div style={{ maxWidth: '90%', maxHeight: '90%', position: 'relative' }} onClick={e => e.stopPropagation()}>
+            <button onClick={() => setPreviewFile(null)} style={{ position: 'absolute', top: -32, right: 0, background: 'none', border: 'none', color: '#888888', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
+            {previewFile.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(previewFile.name) ? (
+              <video controls autoPlay style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8 }} src={getDlUrl(previewFile.id)} />
+            ) : previewFile.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(previewFile.name) ? (
+              <div style={{ background: '#242424', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320, border: '1px solid #2a2a2a' }}>
+                <p style={{ fontSize: '3rem', margin: '0 0 1rem' }}>🎵</p>
+                <p style={{ color: '#ffffff', margin: '0 0 1.5rem', fontSize: '1rem' }}>{previewFile.name}</p>
+                <audio controls autoPlay style={{ width: '100%' }} src={getDlUrl(previewFile.id)} />
+              </div>
+            ) : (
+              <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={getDlUrl(previewFile.id)} alt={previewFile.name} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Drag & Drop */}
+      {dragging && currentTopic && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 999, background: 'rgba(250, 255, 105, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', border: '3px dashed #faff69' }}>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: '4rem', margin: '0 0 .5rem' }}>📁</p>
+            <p style={{ color: '#faff69', fontSize: '1.5rem', fontWeight: 600 }}>Drop files here to upload</p>
+          </div>
+        </div>
+      )}
+
+      {/* Download Progress */}
+      {downloadProgress.active && (
+        <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 1000, background: '#242424', borderRadius: 12, padding: '1rem 1.5rem', minWidth: 280, boxShadow: '0 8px 32px rgba(0,0,0,.5)', border: '1px solid #2a2a2a' }}>
+          <div style={{ fontSize: '.875rem', color: '#ffffff', marginBottom: '.5rem' }}>
+            {downloadProgress.batch ? `⬇ Downloading ${downloadProgress.batch.current}/${downloadProgress.batch.total}` : '⬇ Downloading...'}
+          </div>
+          {downloadProgress.fileName && <div style={{ fontSize: '.75rem', color: '#888888', marginBottom: '.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{downloadProgress.fileName}</div>}
+          <div style={{ width: '100%', height: 6, background: '#1a1a1a', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${downloadProgress.pct}%`, height: '100%', background: 'linear-gradient(90deg, #faff69, #4ade80)', borderRadius: 3, transition: 'width .3s ease' }} />
+          </div>
+          <div style={{ fontSize: '.7rem', color: '#5a5a5a', marginTop: '.25rem', textAlign: 'right' }}>{downloadProgress.pct}%</div>
+        </div>
+      )}
 
       {/* Rename Modal */}
       {renaming && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: 360 }}>
-            <h3 style={{ margin: '0 0 1rem', color: '#e2e8f0', fontSize: '1rem' }}>Rename</h3>
-            <input type="text" value={renaming.name} onChange={e => setRenaming({ ...renaming, name: e.target.value })}
-              onKeyDown={e => e.key === 'Enter' && handleRename()} autoFocus
-              style={{ width: '100%', padding: '.75rem', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }} />
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#242424', borderRadius: 12, padding: '1.5rem', width: 360, border: '1px solid #2a2a2a' }}>
+            <h3 style={{ margin: '0 0 1rem', color: '#ffffff', fontSize: '1rem' }}>Rename</h3>
+            <input type="text" value={renaming.name} onChange={e => setRenaming({ ...renaming, name: e.target.value })} onKeyDown={e => e.key === 'Enter' && handleRename()} autoFocus
+              style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #2a2a2a', background: '#121212', color: '#cccccc', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }} />
             <div style={{ display: 'flex', gap: '.5rem', marginTop: '1rem', justifyContent: 'flex-end' }}>
-              <button onClick={() => setRenaming(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}>Cancel</button>
-              <button onClick={handleRename} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer' }}>Save</button>
+              <button onClick={() => setRenaming(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #2a2a2a', background: '#1a1a1a', color: '#888888', cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleRename} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer' }}>Save</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Edit Share Modal */}
-      {editShare && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#e2e8f0' }}>✏️ Edit Share Link</h3>
-              <button onClick={() => setEditShare(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+      {/* ─── Audio Player Bar ─── */}
+      {showAudioPlayer && (
+        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 999, background: '#1a1a1a', borderTop: '1px solid #2a2a2a', padding: '.5rem 1rem', display: 'flex', alignItems: 'center', gap: '.75rem', backdropFilter: 'blur(8px)' }}>
+          <audio ref={audioRef} src={audioIndex >= 0 ? getDlUrl(audioQueue[audioIndex].id) : undefined}
+            onTimeUpdate={audioHandlers.onTimeUpdate} onLoadedMetadata={audioHandlers.onLoadedMetadata}
+            onEnded={audioHandlers.onEnded} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)}
+            />
+          <div style={{ minWidth: 0, flex: '0 0 180px', overflow: 'hidden' }}>
+            <div style={{ fontSize: '.8rem', color: '#ffffff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {audioIndex >= 0 ? audioQueue[audioIndex].name : ''}
             </div>
-            <p style={{ fontSize: '.875rem', color: '#94a3b8', marginBottom: '1rem' }}>
-              <strong style={{ color: '#e2e8f0' }}>{editShare.fileName}</strong> · code: <code style={{ color: '#38bdf8' }}>{editShare.code}</code>
+            <div style={{ fontSize: '.65rem', color: '#5a5a5a' }}>
+              {audioIndex + 1}/{audioQueue.length} · {formatBytes(audioQueue[audioIndex]?.size || 0)}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '.25rem' }}>
+            <button onClick={audioHandlers.prev} style={{ background: 'none', border: 'none', color: '#cccccc', cursor: 'pointer', fontSize: '1.125rem', padding: '.25rem' }}>⏮</button>
+            <button onClick={audioHandlers.togglePlay} style={{ width: 36, height: 36, borderRadius: '50%', border: 'none', background: '#faff69', color: '#0a0a0a', cursor: 'pointer', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {isPlaying ? '⏸' : '▶️'}
+            </button>
+            <button onClick={audioHandlers.next} style={{ background: 'none', border: 'none', color: '#cccccc', cursor: 'pointer', fontSize: '1.125rem', padding: '.25rem' }}>⏭</button>
+          </div>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+            <span style={{ fontSize: '.7rem', color: '#5a5a5a', minWidth: 32, textAlign: 'right' }}>{formatTime(audioProgress)}</span>
+            <div onClick={audioHandlers.seek} style={{ flex: 1, height: 6, background: '#242424', borderRadius: 3, cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ width: `${audioDuration > 0 ? (audioProgress / audioDuration) * 100 : 0}%`, height: '100%', background: 'linear-gradient(90deg, #faff69, #4ade80)', borderRadius: 3, transition: 'width .2s linear' }} />
+            </div>
+            <span style={{ fontSize: '.7rem', color: '#5a5a5a', minWidth: 32 }}>{formatTime(audioDuration)}</span>
+          </div>
+          <button onClick={() => { setAudioIndex(-1); setAudioQueue([]); setIsPlaying(false); if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; } }}
+            style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1rem', padding: '.25rem' }}>✕</button>
+        </div>
+      )}
+
+      {/* ─── Move File Modal ─── */}
+      {moveFile && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setMoveFile(null)}>
+          <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#ffffff' }}>📂 Move File</h3>
+              <button onClick={() => setMoveFile(null)} style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+            <p style={{ fontSize: '.875rem', color: '#888888', marginBottom: '1rem' }}>
+              <strong style={{ color: '#ffffff' }}>{moveFile.name}</strong>
+            </p>
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Select target folder:</label>
+              <div style={{ maxHeight: 240, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+                <button onClick={() => setMoveTargetFolder(null)}
+                  style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === null ? '#2a2a2a' : '#242424', color: moveTargetFolder === null ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
+                  📂 Topic root (no folder)
+                </button>
+                {moveTargetFolders.length === 0 && (
+                  <p style={{ color: '#5a5a5a', fontSize: '.8rem', textAlign: 'center', padding: '1rem 0' }}>No sub-folders — create one first</p>
+                )}
+                {moveTargetFolders.map(f => (
+                  <button key={f.id} onClick={() => setMoveTargetFolder(f.id)}
+                    style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === f.id ? '#2a2a2a' : '#242424', color: moveTargetFolder === f.id ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
+                    📁 {f.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end' }}>
+              <button onClick={() => setMoveFile(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #2a2a2a', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={handleConfirmMove} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>Move</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Edit Share Modal ─── */}
+      {editShare && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#ffffff' }}>✏️ Edit Share Link</h3>
+              <button onClick={() => setEditShare(null)} style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+            <p style={{ fontSize: '.875rem', color: '#888888', marginBottom: '1rem' }}>
+              <strong style={{ color: '#ffffff' }}>{editShare.fileName}</strong> · code: <code style={{ color: '#faff69' }}>{editShare.code}</code>
             </p>
 
             <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '.875rem', color: '#94a3b8', marginBottom: '.25rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.25rem' }}>
                 Password: {editShare.hasPassword ? '🔒 Set' : '🔓 Not set'}
               </label>
               <input type="text" placeholder="New password" value={editPassword}
                 onChange={e => setEditPassword(e.target.value)}
-                style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box' }} />
+                style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box' }} />
               {editShare.hasPassword && (
-                <label style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginTop: '.5rem', fontSize: '.875rem', color: '#94a3b8', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={editRemovePassword} onChange={e => setEditRemovePassword(e.target.checked)} style={{ accentColor: '#38bdf8' }} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginTop: '.5rem', fontSize: '.875rem', color: '#888888', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={editRemovePassword} onChange={e => setEditRemovePassword(e.target.checked)} style={{ accentColor: '#faff69' }} />
                   Remove password
                 </label>
               )}
             </div>
 
             <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '.875rem', color: '#94a3b8', marginBottom: '.25rem' }}>Expires in</label>
-              <select value={editExpiresIn} onChange={e => setEditExpiresIn(Number(e.target.value))} style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box', cursor: 'pointer' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.25rem' }}>Expires in</label>
+              <select value={editExpiresIn} onChange={e => setEditExpiresIn(Number(e.target.value))} style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box', cursor: 'pointer' }}>
                 {EXPIRY_OPTIONS.map(opt => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
@@ -1158,99 +1055,12 @@ function Dashboard() {
             </div>
 
             <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
-              <button onClick={() => setEditShare(null)} style={{ padding: '.5rem 1rem', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
-              <button onClick={handleSaveEdit} disabled={savingEdit} style={{ padding: '.5rem 1.5rem', borderRadius: 8, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem', opacity: savingEdit ? .7 : 1 }}>
+              <button onClick={() => setEditShare(null)} style={{ padding: '.5rem 1rem', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={handleSaveEdit} disabled={savingEdit} style={{ padding: '.5rem 1.5rem', borderRadius: 8, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem', opacity: savingEdit ? .7 : 1 }}>
                 {savingEdit ? 'Saving...' : 'Save'}
               </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Move File Modal */}
-      {moveFileTarget && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#e2e8f0' }}>📂 Move File</h3>
-              <button onClick={() => setMoveFileTarget(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
-            </div>
-            <p style={{ fontSize: '.875rem', color: '#94a3b8', marginBottom: '1rem' }}>
-              Move <strong style={{ color: '#e2e8f0' }}>{moveFileTarget.name}</strong> to:
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem', maxHeight: 300, overflow: 'auto' }}>
-              {topics
-                .filter(t => t.topicId !== currentTopic?.topicId)
-                .map(t => (
-                <button key={t.topicId} onClick={() => handleMoveFile(moveFileTarget.id, t.topicId)}
-                  style={{ display: 'flex', alignItems: 'center', gap: '.5rem', width: '100%', textAlign: 'left', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem' }}>
-                  <span>📁</span>
-                  <span style={{ flex: 1 }}>{t.name}</span>
-                  <span style={{ color: '#64748b', fontSize: '.75rem' }}>{t.fileCount} files</span>
-                </button>
-              ))}
-              {topics.filter(t => t.topicId !== currentTopic?.topicId).length === 0 && (
-                <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem 0', fontSize: '.875rem' }}>
-                  No other topics available. Create a new topic first.
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Hidden audio element */}
-      <audio ref={audioRef} preload="auto" />
-
-      {/* Persistent Audio Player Bar */}
-      {currentAudioFile && audioIndex >= 0 && (
-        <div style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 900,
-          background: '#0f172a', borderTop: '1px solid #334155',
-          padding: '.5rem 1rem', display: 'flex', alignItems: 'center', gap: '.75rem',
-        }}>
-          {/* Track info */}
-          <div style={{ minWidth: 0, flex: '0 0 auto', maxWidth: 240 }}>
-            <p style={{ margin: 0, fontSize: '.8rem', color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              🎵 {currentAudioFile.name}
-            </p>
-            <p style={{ margin: 0, fontSize: '.7rem', color: '#64748b' }}>
-              {audioIndex + 1} / {audioQueue.length}
-            </p>
-          </div>
-
-          {/* Controls */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '.25rem', flexShrink: 0 }}>
-            <button onClick={handlePrevTrack} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.1rem', padding: '.25rem' }}>⏮</button>
-            <button onClick={togglePlay} style={{ background: '#38bdf8', border: 'none', color: '#0f172a', borderRadius: '50%', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '1rem', fontWeight: 700 }}>
-              {isAudioPlaying ? '⏸' : '▶️'}
-            </button>
-            <button onClick={handleNextTrack} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.1rem', padding: '.25rem' }}>⏭</button>
-          </div>
-
-          {/* Progress bar */}
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '.5rem' }}>
-            <span style={{ fontSize: '.7rem', color: '#64748b', minWidth: 32, textAlign: 'right' }}>{formatTime(audioProgress)}</span>
-            <div style={{ flex: 1, height: 4, background: '#334155', borderRadius: 2, cursor: 'pointer', position: 'relative' }}
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const pct = (e.clientX - rect.left) / rect.width;
-                if (audioRef.current && audioDuration > 0) {
-                  audioRef.current.currentTime = pct * audioDuration;
-                }
-              }}>
-              <div style={{
-                width: `${audioDuration > 0 ? (audioProgress / audioDuration) * 100 : 0}%`,
-                height: '100%', background: '#38bdf8', borderRadius: 2,
-                transition: 'width .2s linear',
-              }} />
-            </div>
-            <span style={{ fontSize: '.7rem', color: '#64748b', minWidth: 32 }}>{formatTime(audioDuration)}</span>
-          </div>
-
-          {/* Close */}
-          <button onClick={() => { setIsAudioPlaying(false); setAudioIndex(-1); setAudioQueue([]); }}
-            style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '.9rem', padding: '.25rem', flexShrink: 0 }}>✕</button>
         </div>
       )}
     </div>
