@@ -19,7 +19,7 @@ import {
   renameFolder,
   deleteFolder,
 } from './metadata';
-import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload } from './storage';
+import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload, transferFileByUrl } from './storage';
 import {
   createShare,
   getShare,
@@ -52,7 +52,15 @@ async function ensureSchema(env: Env) {
         )`).run();
         // Add folder_id to files
         await env.DB.prepare("ALTER TABLE files ADD COLUMN folder_id INTEGER").run();
+        // Add indexes for folder queries
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id)").run();
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_topic ON folders(topic_id)").run();
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)").run();
         console.log('✅ D1 schema migrated to v3 (folders support)');
+      } else {
+        // Ensure indexes exist on existing v3 schema
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_topic ON folders(topic_id)").run();
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)").run();
       }
       return; // Already migrated
     }
@@ -92,6 +100,9 @@ async function ensureSchema(env: Env) {
 
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_files_topic ON files(topic_id)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_topic ON folders(topic_id)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)").run();
 
     console.log('✅ D1 schema migrated to v2 (topic-based)', tableNames);
   } catch (err) {
@@ -351,6 +362,11 @@ app.put('/api/files/:id/move', async (c) => {
   // Verify target topic exists
   const target = await c.env.DB.prepare('SELECT topic_id FROM topics WHERE topic_id = ?').bind(topicId).first();
   if (!target) return c.json({ error: 'Target topic not found' }, 404);
+  // Check if file is moving to a different topic — reset folder_id since folders are topic-scoped
+  const file = await c.env.DB.prepare('SELECT topic_id, folder_id FROM files WHERE id = ?').bind(id).first<{topic_id: number, folder_id: number | null}>();
+  if (file && file.topic_id !== topicId) {
+    await c.env.DB.prepare('UPDATE files SET folder_id = NULL WHERE id = ?').bind(id).run();
+  }
   const ok = await moveFile(c.env, id, topicId);
   return c.json({ ok });
 });
@@ -387,6 +403,18 @@ app.post('/api/files/finalize', async (c) => {
     await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, result.fileId).run();
   }
   return c.json({ ok: true, ...result }, 201);
+});
+
+// ───── URL Transfer: download from URL and store ─────
+app.post('/api/transfer', async (c) => {
+  const { url, topicId, folderId } = await c.req.json();
+  if (!url || !topicId) return c.json({ error: 'url and topicId required' }, 400);
+  try {
+    const result = await transferFileByUrl(c.env, url, topicId, folderId || null);
+    return c.json({ ok: true, ...result }, 201);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 // DELETE /api/files/:id — delete file (D1 + Telegram messages)

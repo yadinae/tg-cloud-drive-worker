@@ -81,6 +81,14 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
   const [expiresIn, setExpiresIn] = useState(0);
   const [creating, setCreating] = useState(false);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [pwLength, setPwLength] = useState<4 | 6>(4);
+
+  const genPassword = () => {
+    const digits = '0123456789';
+    let pwd = '';
+    for (let i = 0; i < pwLength; i++) pwd += digits[Math.floor(Math.random() * digits.length)];
+    setPassword(pwd);
+  };
 
   const load = useCallback(async () => {
     const r = await fetchShares(file.id);
@@ -111,8 +119,15 @@ function ShareManager({ file, onClose }: { file: DriveFile; onClose: () => void 
         </div>
 
         <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          <input type="password" placeholder="Password (optional)" value={password} onChange={e => setPassword(e.target.value)}
-            style={{ flex: 1, minWidth: 140, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem' }} />
+          <div style={{ flex: 1, minWidth: 200, display: 'flex', gap: '.25rem', alignItems: 'center' }}>
+            <input type="text" placeholder="Password (optional)" value={password} onChange={e => setPassword(e.target.value)}
+              style={{ flex: 1, padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem', minWidth: 100 }} />
+            <div style={{ display: 'flex', gap: '2px', flexShrink: 0 }}>
+              <button onClick={() => setPwLength(4)} style={{ padding: '.35rem .45rem', borderRadius: '4px 0 0 4px', border: '1px solid #334155', background: pwLength === 4 ? '#38bdf8' : '#1e293b', color: pwLength === 4 ? '#0f172a' : '#94a3b8', cursor: 'pointer', fontSize: '.7rem', lineHeight: 1, fontWeight: 600 }}>4位</button>
+              <button onClick={() => setPwLength(6)} style={{ padding: '.35rem .45rem', borderRadius: '0 4px 4px 0', border: '1px solid #334155', background: pwLength === 6 ? '#38bdf8' : '#1e293b', color: pwLength === 6 ? '#0f172a' : '#94a3b8', cursor: 'pointer', fontSize: '.7rem', lineHeight: 1, fontWeight: 600 }}>6位</button>
+            </div>
+            <button onClick={genPassword} style={{ padding: '.35rem .6rem', borderRadius: 6, border: 'none', background: '#7c3aed', color: '#fff', cursor: 'pointer', fontSize: '.75rem', fontWeight: 600, whiteSpace: 'nowrap' }}>🔑 生成</button>
+          </div>
           <select value={expiresIn} onChange={e => setExpiresIn(Number(e.target.value))}
             style={{ padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', fontSize: '.875rem' }}>
             <option value={0}>No expiry</option>

@@ -294,3 +294,72 @@ export async function finalizeChunkedUpload(
 
   return { fileId: fileRecord.id, manifest: chunks };
 }
+
+/**
+ * Download a file from a URL and store it in the drive.
+ * Handles chunking for files > 18MB automatically.
+ * Max file size: 100MB (Worker memory limit).
+ */
+export async function transferFileByUrl(
+  env: Env,
+  url: string,
+  topicId: number,
+  folderId: number | null,
+): Promise<{ fileId: number; fileName: string; size: number }> {
+  const MAX_SIZE = 100 * 1024 * 1024;
+
+  // Retry the initial fetch up to 3 times with backoff
+  let res: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (res.ok) break;
+      if (attempt < 2 && res.status >= 500) {
+        // Server error — retry
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        continue;
+      }
+      throw new Error(`HTTP ${res.status}`);
+    } catch (err: any) {
+      if (attempt === 2 || err.name === 'AbortError') {
+        throw new Error(`Failed to fetch URL after 3 attempts: ${err.message}`);
+      }
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+    }
+  }
+  if (!res) throw new Error('Failed to fetch URL after 3 attempts');
+
+  let fileName = '';
+  const cd = res.headers.get('Content-Disposition');
+  if (cd) {
+    const match = cd.match(/filename[^;=\n]*=["']?([^"';\n]*)["']?/);
+    if (match) fileName = decodeURIComponent(match[1]);
+  }
+  if (!fileName) {
+    const urlPath = new URL(url).pathname;
+    fileName = urlPath.split('/').pop() || 'downloaded_file';
+    if (!fileName.includes('.')) fileName += '.bin';
+  }
+
+  const contentLengthStr = res.headers.get('Content-Length');
+  const contentLength = contentLengthStr ? parseInt(contentLengthStr, 10) : 0;
+  if (contentLength > MAX_SIZE) {
+    throw new Error(`File too large: ${(contentLength / 1024 / 1024).toFixed(0)}MB (max ${MAX_SIZE / 1024 / 1024}MB)`);
+  }
+
+  const buffer = await res.arrayBuffer();
+  if (buffer.byteLength > MAX_SIZE) {
+    throw new Error(`File too large: ${(buffer.byteLength / 1024 / 1024).toFixed(0)}MB (max ${MAX_SIZE / 1024 / 1024}MB)`);
+  }
+
+  const mimeType = res.headers.get('Content-Type') || 'application/octet-stream';
+  const mime = mimeType.split(';')[0].trim();
+
+  const result = await uploadCompleteFile(env, topicId, fileName, mime, buffer);
+
+  if (folderId && result.fileId) {
+    await env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, result.fileId).run();
+  }
+
+  return { fileId: result.fileId, fileName, size: buffer.byteLength };
+}

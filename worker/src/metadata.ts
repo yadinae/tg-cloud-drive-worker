@@ -218,13 +218,34 @@ export async function renameFolder(env: Env, folderId: number, name: string): Pr
 }
 
 export async function deleteFolder(env: Env, folderId: number): Promise<boolean> {
-  // Reassign files in this folder to its parent (or topic root if no parent)
+  // Find the parent for reassignment
   const folder = await env.DB.prepare('SELECT parent_id FROM folders WHERE id = ?').bind(folderId).first<FolderRow>();
   const newParentId = folder?.parent_id ?? null;
+
+  // Collect all descendant folder IDs recursively (CTE)
+  const descendants = await env.DB.prepare(
+    `WITH RECURSIVE tree AS (
+       SELECT id, parent_id FROM folders WHERE id = ?
+       UNION ALL
+       SELECT f.id, f.parent_id FROM folders f JOIN tree t ON f.parent_id = t.id
+     )
+     SELECT id FROM tree WHERE id != ?`
+  ).bind(folderId, folderId).all<{ id: number }>();
+  const descendantIds = descendants.results.map(r => r.id);
+
+  // Reassign files from all descendants to the new parent
+  if (descendantIds.length > 0) {
+    const placeholders = descendantIds.map(() => '?').join(',');
+    await env.DB.prepare(
+      `UPDATE files SET folder_id = ? WHERE folder_id IN (${placeholders})`
+    ).bind(newParentId, ...descendantIds).run();
+    await env.DB.prepare(
+      `DELETE FROM folders WHERE id IN (${placeholders})`
+    ).bind(...descendantIds).run();
+  }
+
+  // Reassign files from the deleted folder itself
   await env.DB.prepare('UPDATE files SET folder_id = ? WHERE folder_id = ?').bind(newParentId, folderId).run();
-  // Delete sub-folders (recurse: reassign their files too)
-  await env.DB.prepare('UPDATE files SET folder_id = ? WHERE folder_id IN (SELECT id FROM folders WHERE parent_id = ?)').bind(newParentId, folderId).run();
-  await env.DB.prepare('DELETE FROM folders WHERE parent_id = ?').bind(folderId).run();
   const result = await env.DB.prepare('DELETE FROM folders WHERE id = ?').bind(folderId).run();
   return result.success;
 }

@@ -30,11 +30,18 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
     return { error: 'File not found' };
   }
 
-  // Generate 8-char unique code
+  // Generate 8-char unique code (collision-free)
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let code = '';
-  for (let i = 0; i < 8; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  for (let attempt = 0; attempt < 10; attempt++) {
+    code = '';
+    for (let i = 0; i < 8; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    // Check for collision
+    const existing = await env.SHARES.get(`${SHARE_PREFIX}${code}`);
+    if (!existing) break;
+    if (attempt === 9) return { error: 'Failed to generate unique share code' };
   }
 
   const now = Date.now();
