@@ -16,6 +16,7 @@ export async function uploadCompleteFile(
   mimeType: string,
   fileBuffer: ArrayBuffer,
   onProgress?: (progress: UploadProgress) => void,
+  folderId?: number | null,
 ): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
   const totalSize = fileBuffer.byteLength;
   const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
@@ -62,12 +63,10 @@ export async function uploadCompleteFile(
   const firstChunk = chunks[0];
   const effectiveMimeType = mimeType || 'application/octet-stream';
 
-  // The message_id is not immediately returned from sendDocument with topic
-  // We store it if available
   const fileRecord = await createFile(
     env, topicId, fileName, totalSize, effectiveMimeType,
     manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
-    firstChunk.message_id, // may be undefined for first chunk
+    firstChunk.message_id, folderId, // may be undefined for first chunk
   );
 
   if (totalChunks > 1) {
@@ -189,6 +188,105 @@ export async function downloadFileStream(
   });
 }
 
+/**
+ * Transfer a file from an external URL directly into the cloud drive.
+ * Fetches the URL, streams content in 18MB chunks, uploads each to Telegram,
+ * then creates the D1 file record — no local download needed.
+ */
+export async function transferFromUrl(
+  env: Env,
+  topicId: number,
+  url: string,
+  fileName?: string,
+  folderId?: number | null,
+): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
+  }
+
+  // Determine file name from Content-Disposition, URL path, or explicit name
+  const contentType = response.headers.get('content-type') || 'application/octet-stream';
+  const cd = response.headers.get('content-disposition');
+  let name = fileName || '';
+  if (!name && cd) {
+    const m = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (m) name = m[1].replace(/['"]/g, '').trim();
+  }
+  if (!name) {
+    name = url.split('/').pop()?.split('?')[0] || 'download';
+  }
+
+  const body = response.body;
+  if (!body) throw new Error('Response body is null');
+
+  const reader = body.getReader();
+  const chunks: ChunkInfo[] = [];
+  let partIndex = 0;
+  let totalUploaded = 0;
+  let buffer = new Uint8Array(0);
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) {
+      const newBuf = new Uint8Array(buffer.length + value.length);
+      newBuf.set(buffer);
+      newBuf.set(value, buffer.length);
+      buffer = newBuf;
+    }
+
+    // Drain buffer in full-chunk blocks
+    while (buffer.length >= CHUNK_SIZE) {
+      const chunkData = buffer.slice(0, CHUNK_SIZE);
+      buffer = buffer.slice(CHUNK_SIZE);
+
+      const chunkInfo = await sendDocumentToChannel(
+        env, chunkData.buffer as ArrayBuffer,
+        `${name}.part${String(partIndex).padStart(4, '0')}`,
+        'application/octet-stream', topicId,
+      );
+      chunks.push({ ...chunkInfo, part_index: partIndex });
+      totalUploaded += chunkData.length;
+      partIndex++;
+    }
+
+    if (done) {
+      // Flush remaining bytes
+      if (buffer.length > 0) {
+        const chunkInfo = await sendDocumentToChannel(
+          env, buffer.buffer as ArrayBuffer,
+          `${name}.part${String(partIndex).padStart(4, '0')}`,
+          'application/octet-stream', topicId,
+        );
+        chunks.push({ ...chunkInfo, part_index: partIndex });
+        totalUploaded += buffer.length;
+        partIndex++;
+        buffer = new Uint8Array(0);
+      }
+      break;
+    }
+  }
+
+  if (chunks.length === 0) {
+    throw new Error('No data received from URL');
+  }
+
+  const manifestJson = JSON.stringify(chunks);
+  const firstChunk = chunks[0];
+  const totalChunks = chunks.length;
+
+  const fileRecord = await createFile(
+    env, topicId, name, totalUploaded, contentType,
+    manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
+    firstChunk.message_id, folderId,
+  );
+  if (totalChunks > 1) {
+    await updateFileManifest(env, fileRecord.id, manifestJson, totalChunks);
+  }
+
+  return { fileId: fileRecord.id, manifest: chunks };
+}
+
 export async function getShareDownloadUrl(env: Env, fileId: number): Promise<string | null> {
   const fileRecord = await getFile(env, fileId);
   if (!fileRecord) return null;
@@ -222,6 +320,7 @@ export async function receiveUploadChunk(
   mimeType: string,
   topicId: number,
   chunkBuffer: ArrayBuffer,
+  folderId?: number | null,
 ): Promise<{ ok: boolean; chunkIndex: number }> {
   const chunkFileName = totalChunks > 1 ? `${fileName}.part${String(chunkIndex).padStart(4, '0')}` : fileName;
 
@@ -237,6 +336,11 @@ export async function receiveUploadChunk(
       part_index: chunkIndex,
       message_id: chunkInfo.message_id,
     }), { expirationTtl: 86400 }); // 24h TTL
+
+    // Store folderId in meta KV for finalization step
+    if (folderId !== undefined && chunkIndex === 0) {
+      await env.SHARES.put(`${UPLOAD_PREFIX}${uploadId}:meta`, JSON.stringify({ folderId }), { expirationTtl: 86400 });
+    }
 
     return { ok: true, chunkIndex };
   } catch (err: any) {
@@ -256,6 +360,7 @@ export async function finalizeChunkedUpload(
   fileSize: number,
   mimeType: string,
   totalChunks: number,
+  folderId?: number | null,
 ): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
   const chunks: ChunkInfo[] = [];
 
@@ -285,10 +390,22 @@ export async function finalizeChunkedUpload(
   const effectiveMimeType = mimeType || 'application/octet-stream';
   const firstChunk = chunks[0];
 
+  // Resolve folderId: parameter takes priority, otherwise check KV meta
+  let resolvedFolderId = folderId;
+  if (resolvedFolderId === undefined) {
+    try {
+      const metaRaw = await env.SHARES.get(`${UPLOAD_PREFIX}${uploadId}:meta`);
+      if (metaRaw) {
+        const meta = JSON.parse(metaRaw);
+        resolvedFolderId = meta.folderId ?? null;
+      }
+    } catch { /* ignore — fall back to null */ }
+  }
+
   const fileRecord = await createFile(
     env, topicId, fileName, fileSize, effectiveMimeType,
     manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
-    firstChunk.message_id,
+    firstChunk.message_id, resolvedFolderId ?? null,
   );
 
   return { fileId: fileRecord.id, manifest: chunks };

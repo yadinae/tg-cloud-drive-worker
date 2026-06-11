@@ -38,13 +38,18 @@ export const createTopic = (name: string) => req<{ ok: boolean; topic: any }>('/
 export const renameTopic = (topicId: number, name: string) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'DELETE' });
 
-export const fetchFiles = (topicId: number) => req<{ files: any[] }>(`/api/files?topicId=${topicId}`);
+export const fetchFiles = (topicId: number, folderId?: string) => {
+  let path = `/api/files?topicId=${topicId}`;
+  if (folderId !== undefined) path += `&folderId=${folderId}`;
+  return req<{ files: any[] }>(path);
+};
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
 
 /**
- * Upload a file to a topic. Files >45MB are split into chunks client-side.
+ * Upload a file to a topic. Files >18MB are split into chunks client-side.
+ * Optionally upload into a specific folder.
  */
-export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void): Promise<{ ok: boolean; fileId: number }> {
+export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void, folderId?: number | null): Promise<{ ok: boolean; fileId: number }> {
   const token = getToken();
 
   // ─── Small files: single upload with XHR progress ───
@@ -52,6 +57,7 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
+      if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${API_BASE}/api/files/upload`);
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
@@ -89,6 +95,7 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
       fd.append('fileName', file.name);
       fd.append('fileSize', String(file.size));
       fd.append('mimeType', file.type);
+      if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
 
       await new Promise<void>((resolveChunk, rejectChunk) => {
         const xhr = new XMLHttpRequest();
@@ -115,7 +122,7 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
     // Finalize
     return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
       method: 'POST',
-      body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks }),
+      body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks, folderId }),
     });
   }
 
@@ -130,9 +137,88 @@ export const getDlUrl = (id: number) => {
   return `/api/files/${id}/download?token=${token}`;
 };
 
+/**
+ * Download a file with XHR progress tracking.
+ * Downloads the full blob in-memory, then triggers browser save dialog.
+ */
+export function downloadFile(
+  id: number,
+  fileName: string,
+  onProgress?: (pct: number) => void,
+): Promise<void> {
+  const token = getToken();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', `${API_BASE}/api/files/${id}/download?token=${token}`);
+    xhr.responseType = 'blob';
+
+    xhr.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const blob = xhr.response as Blob;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        resolve();
+      } else {
+        reject(new Error(`HTTP ${xhr.status}`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.send();
+  });
+}
+
+/**
+ * Download multiple files sequentially (one by one) with individual progress.
+ * onProgress receives (currentIndex, totalCount, fileName, filePercent).
+ */
+export async function downloadFiles(
+  files: { id: number; name: string }[],
+  onProgress?: (idx: number, total: number, name: string, pct: number) => void,
+): Promise<void> {
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    onProgress?.(i + 1, files.length, f.name, 0);
+    await downloadFile(f.id, f.name, (pct) => {
+      onProgress?.(i + 1, files.length, f.name, pct);
+    });
+    onProgress?.(i + 1, files.length, f.name, 100);
+  }
+}
+
 export const createShare = (p: { fileId: number; password?: string; expiresIn?: number }) => req<{ ok: boolean; code: string; url: string }>('/api/shares', { method: 'POST', body: JSON.stringify(p) });
 export const fetchShares = (fileId: number) => req<{ shares: any[] }>(`/api/shares?fileId=${fileId}`);
 export const deleteShare = (code: string) => req<{ ok: boolean }>(`/api/shares/${code}`, { method: 'DELETE' });
 export const fetchAllShares = () => req<{ shares: any[] }>('/api/shares/list-all');
 export const updateShare = (code: string, p: { password?: string; expiresIn?: number }) =>
   req<{ ok: boolean }>(`/api/shares/${code}`, { method: 'PUT', body: JSON.stringify(p) });
+
+export const transferFromUrl = (p: { url: string; topicId: number; name?: string; folderId?: number | null }) =>
+  req<{ ok: boolean; fileId: number }>('/api/transfer', { method: 'POST', body: JSON.stringify(p) });
+
+// ───── Folders ─────
+export const fetchFolders = (topicId: number, parentId?: number | null) => {
+  let path = `/api/folders?topicId=${topicId}`;
+  if (parentId !== undefined) path += `&parentId=${parentId ?? ''}`;
+  return req<{ folders: any[] }>(path);
+};
+export const createFolderApi = (topicId: number, name: string, parentId?: number | null) =>
+  req<{ ok: boolean; folder: any }>('/api/folders', { method: 'POST', body: JSON.stringify({ topicId, name, parentId: parentId ?? null }) });
+export const renameFolderApi = (id: number, name: string) =>
+  req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+export const deleteFolderApi = (id: number, topicId: number) =>
+  req<{ ok: boolean }>(`/api/folders/${id}?topicId=${topicId}`, { method: 'DELETE' });
+export const fetchFolderPath = (id: number) =>
+  req<{ path: { id: number; name: string }[] }>(`/api/folders/${id}/path`);

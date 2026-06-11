@@ -1,4 +1,4 @@
-import type { Env, TopicRow, FileRow, TopicResponse, FileResponse } from './types';
+import type { Env, TopicRow, FileRow, TopicResponse, FileResponse, FolderRow, FolderResponse } from './types';
 
 // ───── Topics (mirrors Telegram forum topics) ─────
 
@@ -50,19 +50,27 @@ export async function deleteTopic(env: Env, topicId: number): Promise<boolean> {
 
 // ───── Files ─────
 
-export async function listFiles(env: Env, topicId: number): Promise<FileResponse[]> {
+export async function listFiles(env: Env, topicId: number, folderId?: number | null): Promise<FileResponse[]> {
+  if (folderId === undefined) {
+    // List ALL files in topic (including those in folders)
+    const rows = await env.DB.prepare(
+      'SELECT * FROM files WHERE topic_id = ? ORDER BY name'
+    ).bind(topicId).all<FileRow>().then(r => r.results);
+    return rows.map(r => ({
+      id: r.id, topicId: r.topic_id, folderId: r.folder_id,
+      name: r.name, size: r.size, mimeType: r.mime_type,
+      chunkCount: r.chunk_count, createdAt: r.created_at,
+    }));
+  }
+  // List files at a specific folder level (null = topic root, number = inside folder)
   const rows = await env.DB.prepare(
-    'SELECT * FROM files WHERE topic_id = ? ORDER BY name'
-  ).bind(topicId).all<FileRow>().then(r => r.results);
-
+    `SELECT * FROM files WHERE topic_id = ? AND (folder_id IS ? OR (folder_id IS NULL AND ? IS NULL))
+     ORDER BY name`
+  ).bind(topicId, folderId ?? null, folderId ?? null).all<FileRow>().then(r => r.results);
   return rows.map(r => ({
-    id: r.id,
-    topicId: r.topic_id,
-    name: r.name,
-    size: r.size,
-    mimeType: r.mime_type,
-    chunkCount: r.chunk_count,
-    createdAt: r.created_at,
+    id: r.id, topicId: r.topic_id, folderId: r.folder_id,
+    name: r.name, size: r.size, mimeType: r.mime_type,
+    chunkCount: r.chunk_count, createdAt: r.created_at,
   }));
 }
 
@@ -83,11 +91,12 @@ export async function createFile(
   botFileId: string,
   fileUniqueId: string,
   messageId?: number,
+  folderId?: number | null,
 ): Promise<FileRow> {
   const result = await env.DB.prepare(
-    `INSERT INTO files (topic_id, name, size, mime_type, manifest, chunk_count, bot_file_id, file_unique_id, message_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
-  ).bind(topicId, name, size, mimeType, manifest, chunkCount, botFileId, fileUniqueId, messageId ?? null)
+    `INSERT INTO files (topic_id, folder_id, name, size, mime_type, manifest, chunk_count, bot_file_id, file_unique_id, message_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+  ).bind(topicId, folderId ?? null, name, size, mimeType, manifest, chunkCount, botFileId, fileUniqueId, messageId ?? null)
     .first<FileRow>();
 
   if (!result) throw new Error('Failed to create file record');
@@ -137,14 +146,65 @@ export async function searchFiles(env: Env, query: string): Promise<FileResponse
   ).bind(`%${query}%`).all<FileRow>().then(r => r.results);
 
   return rows.map(r => ({
-    id: r.id,
-    topicId: r.topic_id,
-    name: r.name,
-    size: r.size,
-    mimeType: r.mime_type,
-    chunkCount: r.chunk_count,
-    createdAt: r.created_at,
+    id: r.id, topicId: r.topic_id, folderId: r.folder_id ?? null,
+    name: r.name, size: r.size, mimeType: r.mime_type,
+    chunkCount: r.chunk_count, createdAt: r.created_at,
   }));
+}
+
+// ───── Folders (nested within a topic) ─────
+
+export async function listFolders(env: Env, topicId: number, parentId?: number | null): Promise<FolderResponse[]> {
+  if (parentId === undefined) {
+    // List ALL folders in topic (for tree view)
+    const rows = await env.DB.prepare(
+      `SELECT f.*, (SELECT COUNT(*) FROM files WHERE folder_id = f.id) as file_count
+       FROM folders f WHERE f.topic_id = ? ORDER BY f.name`
+    ).bind(topicId).all<FolderRow & { file_count: number }>().then(r => r.results);
+    return rows.map(r => ({ id: r.id, topicId: r.topic_id, parentId: r.parent_id, name: r.name, fileCount: r.file_count, createdAt: r.created_at }));
+  }
+  // List immediate children of parentId (null = root level)
+  const rows = await env.DB.prepare(
+    `SELECT f.*, (SELECT COUNT(*) FROM files WHERE folder_id = f.id) as file_count
+     FROM folders f WHERE f.topic_id = ? AND (f.parent_id IS ? OR (f.parent_id IS NULL AND ? IS NULL))
+     ORDER BY f.name`
+  ).bind(topicId, parentId ?? null, parentId ?? null).all<FolderRow & { file_count: number }>().then(r => r.results);
+  return rows.map(r => ({ id: r.id, topicId: r.topic_id, parentId: r.parent_id, name: r.name, fileCount: r.file_count, createdAt: r.created_at }));
+}
+
+export async function createFolder(env: Env, topicId: number, name: string, parentId?: number | null): Promise<FolderResponse> {
+  const result = await env.DB.prepare(
+    'INSERT INTO folders (topic_id, parent_id, name) VALUES (?, ?, ?) RETURNING *'
+  ).bind(topicId, parentId ?? null, name).first<FolderRow>();
+  if (!result) throw new Error('Failed to create folder');
+  return { id: result.id, topicId: result.topic_id, parentId: result.parent_id, name: result.name, fileCount: 0, createdAt: result.created_at };
+}
+
+export async function renameFolder(env: Env, folderId: number, name: string): Promise<boolean> {
+  const result = await env.DB.prepare(
+    'UPDATE folders SET name = ?, updated_at = unixepoch() WHERE id = ?'
+  ).bind(name, folderId).run();
+  return result.success;
+}
+
+export async function deleteFolder(env: Env, folderId: number, topicId: number): Promise<boolean> {
+  // Move files in this folder to topic root (or parent)
+  await env.DB.prepare('UPDATE files SET folder_id = NULL WHERE folder_id = ?').bind(folderId).run();
+  // Move child folders up one level
+  await env.DB.prepare('UPDATE folders SET parent_id = NULL WHERE parent_id = ? AND topic_id = ?').bind(folderId, topicId).run();
+  const result = await env.DB.prepare('DELETE FROM folders WHERE id = ?').bind(folderId).run();
+  return result.success;
+}
+
+export async function getFolderPath(env: Env, folderId: number): Promise<{ id: number; name: string }[]> {
+  const path: { id: number; name: string }[] = [];
+  let current = await env.DB.prepare('SELECT id, name, parent_id FROM folders WHERE id = ?').bind(folderId).first<FolderRow>();
+  while (current) {
+    path.unshift({ id: current.id, name: current.name });
+    if (current.parent_id === null) break;
+    current = await env.DB.prepare('SELECT id, name, parent_id FROM folders WHERE id = ?').bind(current.parent_id).first<FolderRow>();
+  }
+  return path;
 }
 
 // ───── Stats ─────

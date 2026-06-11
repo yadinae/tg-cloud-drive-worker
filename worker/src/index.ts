@@ -13,8 +13,13 @@ import {
   getAndDeleteFile,
   searchFiles,
   getStats,
+  listFolders,
+  createFolder as createFolderMeta,
+  renameFolder,
+  deleteFolder as deleteFolderMeta,
+  getFolderPath,
 } from './metadata';
-import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload } from './storage';
+import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload, transferFromUrl } from './storage';
 import {
   createShare,
   getShare,
@@ -26,6 +31,7 @@ import {
 } from './shares';
 import { verifyBotConnection, deleteFileMessages } from './bot';
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
+import { apiIndex, openApiSpec } from './openapi';
 
 // ───── Auto-migrate D1 on cold start ─────
 async function ensureSchema(env: Env) {
@@ -34,10 +40,26 @@ async function ensureSchema(env: Env) {
     const allTables = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all<{name: string}>();
     const tableNames = allTables.results.map(r => r.name);
 
-    if (tableNames.includes('topics')) return; // Already migrated
+    if (tableNames.includes('topics')) {
+      // Already migrated to v2 — check v3 folders migration
+      if (!tableNames.includes('folders')) {
+        await env.DB.prepare(`CREATE TABLE folders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          topic_id INTEGER NOT NULL,
+          parent_id INTEGER,
+          name TEXT NOT NULL,
+          created_at INTEGER DEFAULT (unixepoch())
+        )`).run();
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_topic ON folders(topic_id)").run();
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)").run();
+        // Add folder_id to files
+        try { await env.DB.prepare("ALTER TABLE files ADD COLUMN folder_id INTEGER").run(); } catch (_) {}
+        console.log('✅ D1 schema migrated to v3 (folders)');
+      }
+      return;
+    }
 
-    // Drop old folders
-    await env.DB.prepare("DROP TABLE IF EXISTS folders").run();
+    await env.DB.prepare("DROP TABLE IF EXISTS folders_old").run();
 
     // Drop old files table and create new one with topic_id
     await env.DB.prepare("DROP TABLE IF EXISTS files_old").run();
@@ -116,6 +138,18 @@ app.get('/assets/*', (c) => {
     return c.body(FRONTEND_JS_CONTENT);
   }
   return c.html(FRONTEND_HTML);
+});
+
+// ───── Agent API Discovery ─────
+app.get('/api', (c) => {
+  const url = new URL(c.req.url);
+  return c.json(apiIndex(url));
+});
+
+app.get('/api/openapi.json', (c) => {
+  const url = new URL(c.req.url);
+  const base = `${url.origin}`;
+  return c.json(openApiSpec(base));
 });
 
 // ───── Health ─────
@@ -222,10 +256,58 @@ app.delete('/api/topics/:topicId', async (c) => {
   return c.json({ ok });
 });
 
+// ───── Folders ─────
+
+// GET /api/folders?topicId=X&parentId=Y — list folders (parentId optional, omit for all)
+app.get('/api/folders', async (c) => {
+  const topicId = Number(c.req.query('topicId'));
+  if (!topicId) return c.json({ error: 'topicId is required' }, 400);
+  const parentIdParam = c.req.query('parentId');
+  const parentId = parentIdParam === undefined ? undefined : (parentIdParam === '' ? null : Number(parentIdParam));
+  const folders = await listFolders(c.env, topicId, parentId);
+  return c.json({ folders });
+});
+
+// POST /api/folders — create a folder
+app.post('/api/folders', async (c) => {
+  const { topicId, name, parentId } = await c.req.json();
+  if (!topicId || !name) return c.json({ error: 'topicId and name are required' }, 400);
+  const folder = await createFolderMeta(c.env, topicId, name, parentId ?? null);
+  return c.json({ ok: true, folder }, 201);
+});
+
+// PUT /api/folders/:id — rename
+app.put('/api/folders/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const { name } = await c.req.json();
+  if (!name) return c.json({ error: 'name is required' }, 400);
+  const ok = await renameFolder(c.env, id, name.trim());
+  return c.json({ ok });
+});
+
+// DELETE /api/folders/:id?topicId=X — delete (files go to topic root)
+app.delete('/api/folders/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const topicId = Number(c.req.query('topicId'));
+  if (!topicId) return c.json({ error: 'topicId query required' }, 400);
+  const ok = await deleteFolderMeta(c.env, id, topicId);
+  return c.json({ ok });
+});
+
+// GET /api/folders/:id/path — breadcrumb path from folder to root
+app.get('/api/folders/:id/path', async (c) => {
+  const id = Number(c.req.param('id'));
+  const path = await getFolderPath(c.env, id);
+  return c.json({ path });
+});
+
 // ───── Files ─────
 
-// GET /api/files?topicId=X — list files in a topic
-// GET /api/files?q=xxx — search files
+// GET /api/files — list files in a topic
+//   ?topicId=X           — all files in topic (any folder)
+//   ?topicId=X&folderId= — files in topic root only
+//   ?topicId=X&folderId=Y — files in folder Y
+//   ?q=xxx               — search all files
 app.get('/api/files', async (c) => {
   const query = c.req.query('q');
   if (query) {
@@ -237,11 +319,13 @@ app.get('/api/files', async (c) => {
   if (!topicId) {
     return c.json({ error: 'topicId query parameter required' }, 400);
   }
-  const files = await listFiles(c.env, Number(topicId));
+  const folderIdParam = c.req.query('folderId');
+  const folderId = folderIdParam === undefined ? undefined : (folderIdParam === '' ? null : Number(folderIdParam));
+  const files = await listFiles(c.env, Number(topicId), folderId);
   return c.json({ files });
 });
 
-// POST /api/files/upload — upload file to a topic
+// POST /api/files/upload — upload file to a topic (optionally in a folder)
 app.post('/api/files/upload', async (c) => {
   const contentType = c.req.header('Content-Type') || '';
 
@@ -250,17 +334,18 @@ app.post('/api/files/upload', async (c) => {
     const fileEntry = formData.get('file') as File | null;
     const topicId = Number(formData.get('topicId'));
     const mimeType = (formData.get('mimeType') as string) || fileEntry?.type || 'application/octet-stream';
+    const folderId = formData.get('folderId') ? Number(formData.get('folderId')) : undefined;
 
     if (!fileEntry || !topicId) {
       return c.json({ error: 'file and topicId are required' }, 400);
     }
     const buffer = await fileEntry.arrayBuffer();
-    const result = await uploadCompleteFile(c.env, topicId, fileEntry.name, mimeType, buffer);
+    const result = await uploadCompleteFile(c.env, topicId, fileEntry.name, mimeType, buffer, undefined, folderId);
     return c.json({ ok: true, ...result }, 201);
   }
 
   // JSON mode
-  const { topicId, name, data, mimeType } = await c.req.json();
+  const { topicId, name, data, mimeType, folderId } = await c.req.json();
   if (!topicId || !name || !data) {
     return c.json({ error: 'topicId, name, and data are required' }, 400);
   }
@@ -268,8 +353,22 @@ app.post('/api/files/upload', async (c) => {
   const bytes = new Uint8Array(binaryStr.length);
   for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
   const buffer = bytes.buffer;
-  const result = await uploadCompleteFile(c.env, topicId, name, mimeType || 'application/octet-stream', buffer);
+  const result = await uploadCompleteFile(c.env, topicId, name, mimeType || 'application/octet-stream', buffer, undefined, folderId);
   return c.json({ ok: true, ...result }, 201);
+});
+
+// POST /api/transfer — transfer a file from an external URL
+app.post('/api/transfer', async (c) => {
+  const { url, topicId, name, folderId } = await c.req.json();
+  if (!url || !topicId) {
+    return c.json({ error: 'url and topicId are required' }, 400);
+  }
+  try {
+    const result = await transferFromUrl(c.env, topicId, url, name, folderId);
+    return c.json({ ok: true, ...result }, 201);
+  } catch (err: any) {
+    return c.json({ error: `Transfer failed: ${err.message}` }, 502);
+  }
 });
 
 // PUT /api/files/:id — rename file
@@ -292,23 +391,24 @@ app.post('/api/files/upload-chunk', async (c) => {
   const fileName = formData.get('fileName') as string;
   const fileSize = Number(formData.get('fileSize'));
   const mimeType = formData.get('mimeType') as string || 'application/octet-stream';
+  const folderId = formData.get('folderId') ? Number(formData.get('folderId')) : undefined;
 
   if (!fileEntry || !uploadId || !topicId) {
     return c.json({ error: 'file, uploadId, and topicId are required' }, 400);
   }
 
   const buffer = await fileEntry.arrayBuffer();
-  const result = await receiveUploadChunk(c.env, uploadId, chunkIndex, totalChunks, fileName, fileSize, mimeType, topicId, buffer);
+  const result = await receiveUploadChunk(c.env, uploadId, chunkIndex, totalChunks, fileName, fileSize, mimeType, topicId, buffer, folderId);
   return c.json({ ...result, chunkIndex });
 });
 
 // ───── Chunked Upload: finalize all chunks ─────
 app.post('/api/files/finalize', async (c) => {
-  const { uploadId, topicId, name, size, mimeType, totalChunks } = await c.req.json();
+  const { uploadId, topicId, name, size, mimeType, totalChunks, folderId } = await c.req.json();
   if (!uploadId || !topicId || !name) {
     return c.json({ error: 'uploadId, topicId, and name are required' }, 400);
   }
-  const result = await finalizeChunkedUpload(c.env, uploadId, topicId, name, size || 0, mimeType || 'application/octet-stream', totalChunks || 1);
+  const result = await finalizeChunkedUpload(c.env, uploadId, topicId, name, size || 0, mimeType || 'application/octet-stream', totalChunks || 1, folderId);
   return c.json({ ok: true, ...result }, 201);
 });
 
