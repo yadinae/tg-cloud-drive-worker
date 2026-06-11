@@ -371,6 +371,22 @@ app.post('/api/transfer', async (c) => {
   }
 });
 
+// PUT /api/files/:id/move — move file to a different folder
+app.put('/api/files/:id/move', async (c) => {
+  const id = Number(c.req.param('id'));
+  const { topicId, folderId } = await c.req.json();
+  if (!topicId) return c.json({ error: 'topicId is required' }, 400);
+  
+  // Update the file's folder_id (null = topic root)
+  const folderVal = folderId !== undefined && folderId !== null ? Number(folderId) : null;
+  const result = await c.env.DB.prepare(
+    'UPDATE files SET folder_id = ?, updated_at = unixepoch() WHERE id = ? AND topic_id = ?'
+  ).bind(folderVal, id, Number(topicId)).run();
+  
+  if (!result.success) return c.json({ error: 'Move failed' }, 500);
+  return c.json({ ok: true });
+});
+
 // PUT /api/files/:id — rename file
 app.put('/api/files/:id', async (c) => {
   const id = Number(c.req.param('id'));

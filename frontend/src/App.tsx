@@ -319,12 +319,15 @@ function Dashboard() {
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileInput = e.target;
-    const file = fileInput.files?.[0];
-    if (!file || !currentTopic) return;
+    if (!fileInput.files || !fileInput.files.length || !currentTopic) return;
+    const fileList = Array.from(fileInput.files);
     setUploading(true);
     setUploadProgress(0);
     try {
-      await uploadFile(currentTopic.topicId, file, setUploadProgress, currentFolder);
+      for (let idx = 0; idx < fileList.length; idx++) {
+        const file = fileList[idx];
+        await uploadFile(currentTopic.topicId, file, (pct) => setUploadProgress(Math.round(((idx * 100 + pct) / fileList.length))), currentFolder);
+      }
       await loadFiles(currentTopic.topicId, currentFolder);
       await loadTopics();
     } catch (err: any) {
@@ -341,6 +344,37 @@ function Dashboard() {
     await loadStats();
   };
 
+  // ─── File Move ───
+  const [moveFile, setMoveFile] = useState<DriveFile | null>(null);
+  const [moveTargetFolder, setMoveTargetFolder] = useState<number | null>(null);
+  const [moveTargetFolders, setMoveTargetFolders] = useState<Folder[]>([]);
+  const [moveTopicId, setMoveTopicId] = useState<number | null>(null);
+
+  const handleOpenMove = async (f: DriveFile) => {
+    setMoveFile(f);
+    setMoveTopicId(f.topicId);
+    setMoveTargetFolder(f.folderId);
+    try {
+      const r = await fetchFolders(f.topicId);
+      setMoveTargetFolders(r.folders);
+    } catch { setMoveTargetFolders([]); }
+  };
+
+  const handleConfirmMove = async () => {
+    if (!moveFile || moveTopicId === null) return;
+    try {
+      const res = await fetch('/api/files/' + moveFile.id + '/move', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('tgcd_auth_token') },
+        body: JSON.stringify({ topicId: moveTopicId, folderId: moveTargetFolder }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Move failed');
+      setMoveFile(null);
+      if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
+    } catch (err: any) {
+      alert('Move failed: ' + err.message);
+    }
+  };
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     const r = await searchFiles(searchQuery);
@@ -562,7 +596,7 @@ function Dashboard() {
   const acCol = (cat: string) => activeCategory === cat ? '#ffffff' : '#888888';
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font }}>
+    <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
       {/* Header */}
       <header style={{ borderBottom: '1px solid #1e293b', padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
@@ -645,7 +679,7 @@ function Dashboard() {
                 <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
                   <label style={{ padding: '.5rem 1rem', borderRadius: 6, background: uploading ? '#242424' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem' }}>
                     {uploading ? `${uploadProgress}%` : `⬆ Upload${currentFolder !== null ? ' → 📁' : ''}`}
-                    <input type="file" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} />
+                    <input type="file" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} multiple />
                   </label>
                   {uploading && (
                     <div style={{ width: 100, height: 4, background: '#242424', borderRadius: 2, overflow: 'hidden' }}>
@@ -737,6 +771,7 @@ function Dashboard() {
                         </a>
                         <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
                         <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#888888', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
+                        <button onClick={() => handleOpenMove(f)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>📂</button>
                         <button onClick={() => handleDeleteFile(f.id)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
                       </div>
                     </div>
@@ -964,6 +999,41 @@ function Dashboard() {
           </div>
           <button onClick={() => { setAudioIndex(-1); setAudioQueue([]); setIsPlaying(false); if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; } }}
             style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1rem', padding: '.25rem' }}>✕</button>
+        </div>
+      )}
+
+      {/* ─── Edit Share Modal ─── */}
+      {/* ─── Move File Modal ─── */}
+      {moveFile && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setMoveFile(null)}>
+          <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#ffffff' }}>📂 Move File</h3>
+              <button onClick={() => setMoveFile(null)} style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+            <p style={{ fontSize: '.875rem', color: '#888888', marginBottom: '1rem' }}>
+              <strong style={{ color: '#ffffff' }}>{moveFile.name}</strong>
+            </p>
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Select target folder:</label>
+              <div style={{ maxHeight: 240, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+                <button onClick={() => setMoveTargetFolder(null)}
+                  style={{ textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #242424', background: moveTargetFolder === null ? '#242424' : 'transparent', color: moveTargetFolder === null ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
+                  📂 Topic root (no folder)
+                </button>
+                {moveTargetFolders.map(f => (
+                  <button key={f.id} onClick={() => setMoveTargetFolder(f.id)}
+                    style={{ textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #242424', background: moveTargetFolder === f.id ? '#242424' : 'transparent', color: moveTargetFolder === f.id ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
+                    📁 {f.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end' }}>
+              <button onClick={() => setMoveFile(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #242424', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={handleConfirmMove} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>Move</button>
+            </div>
+          </div>
         </div>
       )}
 
