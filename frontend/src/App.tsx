@@ -1002,7 +1002,6 @@ function Dashboard() {
         </div>
       )}
 
-      {/* ─── Edit Share Modal ─── */}
       {/* ─── Move File Modal ─── */}
       {moveFile && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setMoveFile(null)}>
@@ -1018,19 +1017,19 @@ function Dashboard() {
               <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Select target folder:</label>
               <div style={{ maxHeight: 240, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
                 <button onClick={() => setMoveTargetFolder(null)}
-                  style={{ textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #242424', background: moveTargetFolder === null ? '#242424' : 'transparent', color: moveTargetFolder === null ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
+                  style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === null ? '#2a2a2a' : '#242424', color: moveTargetFolder === null ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
                   📂 Topic root (no folder)
                 </button>
                 {moveTargetFolders.map(f => (
                   <button key={f.id} onClick={() => setMoveTargetFolder(f.id)}
-                    style={{ textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #242424', background: moveTargetFolder === f.id ? '#242424' : 'transparent', color: moveTargetFolder === f.id ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
+                    style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === f.id ? '#2a2a2a' : '#242424', color: moveTargetFolder === f.id ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
                     📁 {f.name}
                   </button>
                 ))}
               </div>
             </div>
             <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end' }}>
-              <button onClick={() => setMoveFile(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #242424', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={() => setMoveFile(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #2a2a2a', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
               <button onClick={handleConfirmMove} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>Move</button>
             </div>
           </div>
