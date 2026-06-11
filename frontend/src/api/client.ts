@@ -150,7 +150,7 @@ export const getDlUrl = (id: number) => {
 };
 
 /**
- * Download a file with progress tracking via XHR.
+ * Download a file with progress tracking via fetch + ReadableStream.
  * Resolves when the blob is ready and triggers the browser save dialog.
  */
 export function downloadFileWithProgress(
@@ -159,37 +159,70 @@ export function downloadFileWithProgress(
   onProgress?: (pct: number) => void,
 ): Promise<void> {
   const token = getToken();
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', `${API_BASE}/api/files/${fileId}/download?token=${token}`);
-    xhr.responseType = 'blob';
-    xhr.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      } else if (onProgress) {
-        onProgress(50); // indeterminate when no Content-Length
+  const url = `${API_BASE}/api/files/${fileId}/download?token=${encodeURIComponent(token || '')}`;
+
+  return new Promise(async (resolve, reject) => {
+    try {
+      const res = await fetch(url);
+
+      if (!res.ok) {
+        // Try to read error body
+        try {
+          const errData = await res.json();
+          reject(new Error(errData.error || 'HTTP ' + res.status));
+        } catch {
+          reject(new Error('Download failed (HTTP ' + res.status + ')'));
+        }
+        return;
       }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const blob = xhr.response;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-        if (onProgress) onProgress(100);
+
+      const contentLength = res.headers.get('Content-Length');
+      const total = contentLength ? parseInt(contentLength, 10) : 0;
+
+      if (!total || !res.body) {
+        // Fallback: no streaming progress, just get the blob
+        const blob = await res.blob();
+        triggerDownload(blob, fileName);
+        onProgress?.(100);
         resolve();
-      } else {
-        reject(new Error(`Download failed (HTTP ${xhr.status})`));
+        return;
       }
-    };
-    xhr.onerror = () => reject(new Error('Download network error'));
-    xhr.send();
+
+      // Stream with progress tracking
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        if (onProgress && total > 0) {
+          onProgress(Math.round((received / total) * 100));
+        }
+      }
+
+      // Assemble blob and trigger download
+      const blob = new Blob(chunks, { type: 'application/octet-stream' });
+      triggerDownload(blob, fileName);
+      onProgress?.(100);
+      resolve();
+    } catch (err: any) {
+      reject(new Error(err.message || 'Download failed'));
+    }
   });
+}
+
+function triggerDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 export const createShare = (p: { fileId: number; password?: string; expiresIn?: number }) => req<{ ok: boolean; code: string; url: string }>('/api/shares', { method: 'POST', body: JSON.stringify(p) });
