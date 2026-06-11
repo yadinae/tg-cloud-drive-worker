@@ -63,7 +63,7 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
     fileName: file.name,
     fileSize: file.size,
     passwordHash,
-    // password: hash only (removed plaintext storage)
+    password: password || null, // stored for creator display — only accessible via authenticated API
     createdAt: now,
     downloadCount: 0,
     expiresAt,
@@ -196,6 +196,7 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
         fileName: record.fileName,
         fileSize: record.fileSize,
         hasPassword: !!record.passwordHash,
+        password: record.password || null,
         expiresAt: record.expiresAt,
         downloadCount: record.downloadCount || 0,
         createdAt: record.createdAt,
@@ -207,28 +208,33 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
 }
 
 /**
- * List ALL shares across all files.
+ * List ALL shares across all files (with KV pagination).
  */
 export async function listAllShares(env: Env): Promise<ShareResponse[]> {
   const shares: ShareResponse[] = [];
   try {
-    const list = await env.SHARES.list({ prefix: SHARE_PREFIX });
-    for (const key of list.keys) {
-      const raw = await env.SHARES.get(key.name);
-      if (raw) {
-        const record = JSON.parse(raw);
-        shares.push({
-          code: key.name.replace(SHARE_PREFIX, ''),
-          fileId: record.fileId,
-          fileName: record.fileName,
-          fileSize: record.fileSize,
-          hasPassword: !!record.passwordHash,
+    let cursor: string | undefined;
+    do {
+      const list = await env.SHARES.list({ prefix: SHARE_PREFIX, cursor });
+      for (const key of list.keys) {
+        const raw = await env.SHARES.get(key.name);
+        if (raw) {
+          const record = JSON.parse(raw);
+          shares.push({
+            code: key.name.replace(SHARE_PREFIX, ''),
+            fileId: record.fileId,
+            fileName: record.fileName,
+            fileSize: record.fileSize,
+            hasPassword: !!record.passwordHash,
+            password: record.password || null,
             expiresAt: record.expiresAt,
-          downloadCount: record.downloadCount || 0,
-          createdAt: record.createdAt,
-        });
+            downloadCount: record.downloadCount || 0,
+            createdAt: record.createdAt,
+          });
+        }
       }
-    }
+      cursor = list.cursor;
+    } while (cursor);
   } catch (err) {
     console.error('listAllShares error:', err);
   }

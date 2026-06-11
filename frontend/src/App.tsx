@@ -143,7 +143,15 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
                   </td>
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
                     {s.hasPassword ? (
-                        <span title="Password protected">🔒</span>
+                      <>
+                        <button onClick={() => setShowPasswords(prev => ({ ...prev, [s.code]: !prev[s.code] }))}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0 }}>
+                          {showPasswords[s.code] ? '👁️' : '🔒'}
+                        </button>
+                        {showPasswords[s.code] && s.password && (
+                          <span style={{ color: '#faff69', fontSize: '.75rem', fontFamily: 'monospace' }}>{s.password}</span>
+                        )}
+                      </>
                     ) : <span>—</span>}
                   </td>
                   <td style={{ textAlign: 'center', padding: '.5rem', color: '#888888' }}>{s.downloadCount}</td>
@@ -995,7 +1003,19 @@ function Dashboard() {
                         {/* Password */}
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
+                            share.password ? (
+                              <>
+                                <button onClick={() => setShowPasswords(prev => ({ ...prev, [share.code]: !prev[share.code] }))}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0 }}>
+                                  {showPasswords[share.code] ? '👁️' : '🔒'}
+                                </button>
+                                {showPasswords[share.code] && (
+                                  <span style={{ color: '#faff69', fontSize: '.75rem', fontFamily: 'monospace', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{share.password}</span>
+                                )}
+                              </>
+                            ) : (
                               <span style={{ color: '#ffffff', fontSize: '.8rem', cursor: 'help' }} title="Password protected">🔒</span>
+                            )
                           ) : (
                             <span style={{ color: '#5a5a5a' }}>—</span>
                           )}
