@@ -1,4 +1,4 @@
-import type { Env, TopicRow, FileRow, TopicResponse, FileResponse } from './types';
+import type { Env, TopicRow, FileRow, TopicResponse, FileResponse, FolderRow, FolderResponse } from './types';
 
 // ───── Topics (mirrors Telegram forum topics) ─────
 
@@ -50,14 +50,22 @@ export async function deleteTopic(env: Env, topicId: number): Promise<boolean> {
 
 // ───── Files ─────
 
-export async function listFiles(env: Env, topicId: number): Promise<FileResponse[]> {
-  const rows = await env.DB.prepare(
-    'SELECT * FROM files WHERE topic_id = ? ORDER BY name'
-  ).bind(topicId).all<FileRow>().then(r => r.results);
+export async function listFiles(env: Env, topicId: number, folderId: number | null = null): Promise<FileResponse[]> {
+  let rows;
+  if (folderId === null) {
+    rows = await env.DB.prepare(
+      "SELECT * FROM files WHERE topic_id = ? AND folder_id IS NULL ORDER BY name"
+    ).bind(topicId).all<FileRow>().then(r => r.results);
+  } else {
+    rows = await env.DB.prepare(
+      "SELECT * FROM files WHERE topic_id = ? AND folder_id = ? ORDER BY name"
+    ).bind(topicId, folderId).all<FileRow>().then(r => r.results);
+  }
 
   return rows.map(r => ({
     id: r.id,
     topicId: r.topic_id,
+    folderId: r.folder_id,
     name: r.name,
     size: r.size,
     mimeType: r.mime_type,
@@ -146,6 +154,7 @@ export async function searchFiles(env: Env, query: string): Promise<FileResponse
   return rows.map(r => ({
     id: r.id,
     topicId: r.topic_id,
+    folderId: r.folder_id,
     name: r.name,
     size: r.size,
     mimeType: r.mime_type,
@@ -170,4 +179,52 @@ export async function getStats(env: Env): Promise<{ fileCount: number; totalSize
     totalSize: fileStats?.total_size ?? 0,
     topicCount: topicCount?.count ?? 0,
   };
+}
+
+// ───── Folders ─────
+
+export async function listFolders(env: Env, topicId: number, parentId: number | null = null): Promise<FolderResponse[]> {
+  if (parentId === null) {
+    const rows = await env.DB.prepare(
+      `SELECT f.*, COUNT(file.id) as file_count
+       FROM folders f
+       LEFT JOIN files file ON file.folder_id = f.id
+       WHERE f.topic_id = ? AND f.parent_id IS NULL
+       GROUP BY f.id ORDER BY f.name`
+    ).bind(topicId).all<FolderRow & { file_count: number }>().then(r => r.results);
+    return rows.map(r => ({ id: r.id, topicId: r.topic_id, parentId: r.parent_id, name: r.name, fileCount: r.file_count, createdAt: r.created_at }));
+  }
+  const rows = await env.DB.prepare(
+    `SELECT f.*, COUNT(file.id) as file_count
+     FROM folders f
+     LEFT JOIN files file ON file.folder_id = f.id
+     WHERE f.topic_id = ? AND f.parent_id = ?
+     GROUP BY f.id ORDER BY f.name`
+  ).bind(topicId, parentId).all<FolderRow & { file_count: number }>().then(r => r.results);
+  return rows.map(r => ({ id: r.id, topicId: r.topic_id, parentId: r.parent_id, name: r.name, fileCount: r.file_count, createdAt: r.created_at }));
+}
+
+export async function createFolder(env: Env, topicId: number, name: string, parentId: number | null = null): Promise<FolderResponse> {
+  const result = await env.DB.prepare(
+    'INSERT INTO folders (topic_id, parent_id, name) VALUES (?, ?, ?) RETURNING *'
+  ).bind(topicId, parentId, name).first<FolderRow>();
+  if (!result) throw new Error('Failed to create folder');
+  return { id: result.id, topicId: result.topic_id, parentId: result.parent_id, name: result.name, fileCount: 0, createdAt: result.created_at };
+}
+
+export async function renameFolder(env: Env, folderId: number, name: string): Promise<boolean> {
+  const result = await env.DB.prepare('UPDATE folders SET name = ?, updated_at = unixepoch() WHERE id = ?').bind(name, folderId).run();
+  return result.success;
+}
+
+export async function deleteFolder(env: Env, folderId: number): Promise<boolean> {
+  // Reassign files in this folder to its parent (or topic root if no parent)
+  const folder = await env.DB.prepare('SELECT parent_id FROM folders WHERE id = ?').bind(folderId).first<FolderRow>();
+  const newParentId = folder?.parent_id ?? null;
+  await env.DB.prepare('UPDATE files SET folder_id = ? WHERE folder_id = ?').bind(newParentId, folderId).run();
+  // Delete sub-folders (recurse: reassign their files too)
+  await env.DB.prepare('UPDATE files SET folder_id = ? WHERE folder_id IN (SELECT id FROM folders WHERE parent_id = ?)').bind(newParentId, folderId).run();
+  await env.DB.prepare('DELETE FROM folders WHERE parent_id = ?').bind(folderId).run();
+  const result = await env.DB.prepare('DELETE FROM folders WHERE id = ?').bind(folderId).run();
+  return result.success;
 }

@@ -38,18 +38,20 @@ export const createTopic = (name: string) => req<{ ok: boolean; topic: any }>('/
 export const renameTopic = (topicId: number, name: string) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'DELETE' });
 
-export const fetchFiles = (topicId: number) => req<{ files: any[] }>(`/api/files?topicId=${topicId}`);
+export const fetchFiles = (topicId: number, folderId?: number | null) =>
+  req<{ files: any[] }>(`/api/files?topicId=${topicId}${folderId ? `&folderId=${folderId}` : ''}`);
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
 
 /**
  * Upload a single file to a topic. Files >18MB are split into chunks client-side.
  */
-function uploadSingleFile(topicId: number, file: File, token: string | null, onProgress?: (pct: number) => void): Promise<{ ok: boolean; fileId: number }> {
+function uploadSingleFile(topicId: number, file: File, token: string | null, onProgress?: (pct: number) => void, folderId?: number | null): Promise<{ ok: boolean; fileId: number }> {
   // ─── Small files: single upload with XHR progress ───
   if (file.size <= CHUNK_THRESHOLD) {
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
+      if (folderId) fd.append('folderId', String(folderId));
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${API_BASE}/api/files/upload`);
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
@@ -112,7 +114,7 @@ function uploadSingleFile(topicId: number, file: File, token: string | null, onP
     }
     return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
       method: 'POST',
-      body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks }),
+      body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks, folderId }),
     });
   }
 
@@ -126,13 +128,14 @@ export async function uploadFiles(
   topicId: number,
   files: File[],
   onFileProgress?: (index: number, pct: number, status: 'uploading' | 'done' | 'error', error?: string) => void,
+  folderId?: number | null,
   onAllDone?: () => void,
 ): Promise<void> {
   const token = getToken();
   for (let i = 0; i < files.length; i++) {
     try {
       onFileProgress?.(i, 0, 'uploading');
-      await uploadSingleFile(topicId, files[i], token, (pct) => onFileProgress?.(i, pct, 'uploading'));
+      await uploadSingleFile(topicId, files[i], token, (pct) => onFileProgress?.(i, pct, 'uploading'), folderId);
       onFileProgress?.(i, 100, 'done');
     } catch (err: any) {
       onFileProgress?.(i, 0, 'error', err.message);
@@ -144,6 +147,16 @@ export async function uploadFiles(
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const moveFile = (id: number, topicId: number) => req<{ ok: boolean }>(`/api/files/${id}/move`, { method: 'PUT', body: JSON.stringify({ topicId }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
+
+// ───── Folders ─────
+export const fetchFolders = (topicId: number, parentId?: number | null) =>
+  req<{ folders: any[] }>(`/api/folders?topicId=${topicId}${parentId ? `&parentId=${parentId}` : ''}`);
+export const createFolder = (topicId: number, name: string, parentId?: number | null) =>
+  req<{ ok: boolean; folder: any }>('/api/folders', { method: 'POST', body: JSON.stringify({ topicId, name, parentId: parentId ?? null }) });
+export const renameFolder = (id: number, name: string) =>
+  req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+export const deleteFolder = (id: number) =>
+  req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'DELETE' });
 
 export const getDlUrl = (id: number) => {
   const token = getToken();

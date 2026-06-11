@@ -14,6 +14,10 @@ import {
   getAndDeleteFile,
   searchFiles,
   getStats,
+  listFolders,
+  createFolder,
+  renameFolder,
+  deleteFolder,
 } from './metadata';
 import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload } from './storage';
 import {
@@ -35,7 +39,23 @@ async function ensureSchema(env: Env) {
     const allTables = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all<{name: string}>();
     const tableNames = allTables.results.map(r => r.name);
 
-    if (tableNames.includes('topics')) return; // Already migrated
+    if (tableNames.includes('topics')) {
+      // Check for v3 migration (folders support)
+      if (!tableNames.includes('folders')) {
+        await env.DB.prepare(`CREATE TABLE folders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          topic_id INTEGER NOT NULL,
+          parent_id INTEGER,
+          name TEXT NOT NULL,
+          created_at INTEGER DEFAULT (unixepoch()),
+          updated_at INTEGER DEFAULT (unixepoch())
+        )`).run();
+        // Add folder_id to files
+        await env.DB.prepare("ALTER TABLE files ADD COLUMN folder_id INTEGER").run();
+        console.log('✅ D1 schema migrated to v3 (folders support)');
+      }
+      return; // Already migrated
+    }
 
     // Drop old folders
     await env.DB.prepare("DROP TABLE IF EXISTS folders").run();
@@ -223,6 +243,41 @@ app.delete('/api/topics/:topicId', async (c) => {
   return c.json({ ok });
 });
 
+// ───── Folders ─────
+
+// GET /api/folders?topicId=X&parentId=Y — list folders in a topic
+app.get('/api/folders', async (c) => {
+  const topicId = Number(c.req.query('topicId'));
+  const parentId = c.req.query('parentId') ? Number(c.req.query('parentId')) : null;
+  if (!topicId) return c.json({ error: 'topicId required' }, 400);
+  const folders = await listFolders(c.env, topicId, parentId);
+  return c.json({ folders });
+});
+
+// POST /api/folders — create a folder
+app.post('/api/folders', async (c) => {
+  const { topicId, parentId, name } = await c.req.json();
+  if (!topicId || !name?.trim()) return c.json({ error: 'topicId and name required' }, 400);
+  const folder = await createFolder(c.env, topicId, name.trim(), parentId || null);
+  return c.json({ ok: true, folder }, 201);
+});
+
+// PUT /api/folders/:id — rename folder
+app.put('/api/folders/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const { name } = await c.req.json();
+  if (!name?.trim()) return c.json({ error: 'name required' }, 400);
+  const ok = await renameFolder(c.env, id, name.trim());
+  return c.json({ ok });
+});
+
+// DELETE /api/folders/:id — delete folder (files reassigned to parent)
+app.delete('/api/folders/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const ok = await deleteFolder(c.env, id);
+  return c.json({ ok });
+});
+
 // ───── Files ─────
 
 // GET /api/files?topicId=X — list files in a topic
@@ -238,7 +293,8 @@ app.get('/api/files', async (c) => {
   if (!topicId) {
     return c.json({ error: 'topicId query parameter required' }, 400);
   }
-  const files = await listFiles(c.env, Number(topicId));
+  const folderId = c.req.query('folderId') ? Number(c.req.query('folderId')) : null;
+  const files = await listFiles(c.env, Number(topicId), folderId);
   return c.json({ files });
 });
 
@@ -257,6 +313,11 @@ app.post('/api/files/upload', async (c) => {
     }
     const buffer = await fileEntry.arrayBuffer();
     const result = await uploadCompleteFile(c.env, topicId, fileEntry.name, mimeType, buffer);
+    // Set folder if provided
+    const folderId = formData.get('folderId') ? Number(formData.get('folderId')) : null;
+    if (folderId && result.fileId) {
+      await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, result.fileId).run();
+    }
     return c.json({ ok: true, ...result }, 201);
   }
 
@@ -317,11 +378,14 @@ app.post('/api/files/upload-chunk', async (c) => {
 
 // ───── Chunked Upload: finalize all chunks ─────
 app.post('/api/files/finalize', async (c) => {
-  const { uploadId, topicId, name, size, mimeType, totalChunks } = await c.req.json();
+  const { uploadId, topicId, name, size, mimeType, totalChunks, folderId } = await c.req.json();
   if (!uploadId || !topicId || !name) {
     return c.json({ error: 'uploadId, topicId, and name are required' }, 400);
   }
   const result = await finalizeChunkedUpload(c.env, uploadId, topicId, name, size || 0, mimeType || 'application/octet-stream', totalChunks || 1);
+  if (folderId && result.fileId) {
+    await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, result.fileId).run();
+  }
   return c.json({ ok: true, ...result }, 201);
 });
 

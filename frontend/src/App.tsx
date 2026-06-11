@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFiles, deleteFile, renameFile, moveFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFileWithProgress } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFiles, deleteFile, renameFile, moveFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFileWithProgress, fetchFolders, createFolder, renameFolder, deleteFolder } from './api/client';
 
 type View = 'login' | 'drive';
 type ShareCategory = 'active' | 'expiring' | 'expired';
 
 interface Topic { topicId: number; name: string; fileCount: number; createdAt: number; }
-interface DriveFile { id: number; topicId: number; name: string; size: number; mimeType: string; chunkCount: number; createdAt: number; }
+interface DriveFile { id: number; topicId: number; folderId: number | null; name: string; size: number; mimeType: string; chunkCount: number; createdAt: number; }
 interface ShareLink { code: string; fileId: number; fileName: string; fileSize: number; hasPassword: boolean; password: string | null; expiresAt: number | null; downloadCount: number; createdAt: number; }
+interface FolderEntry { id: number; topicId: number; parentId: number | null; name: string; fileCount: number; createdAt: number; }
 
 interface UploadTask {
   id: string;
@@ -266,6 +267,11 @@ function Dashboard() {
   // Move file state
   const [moveFileTarget, setMoveFileTarget] = useState<DriveFile | null>(null);
 
+  // Folder navigation state
+  const [currentFolders, setCurrentFolders] = useState<FolderEntry[]>([]);
+  const [currentFolder, setCurrentFolder] = useState<{ id: number; name: string } | null>(null);
+  const [folderStack, setFolderStack] = useState<Array<{ id: number; name: string }>>([]);
+  const [newFolderName, setNewFolderName] = useState('');
   // Multi-file upload state
   const [uploadQueue, setUploadQueue] = useState<UploadTask[]>([]);
   const [showUploadPanel, setShowUploadPanel] = useState(false);
@@ -293,9 +299,14 @@ function Dashboard() {
     setTopics(r.topics);
   }, []);
 
-  const loadFiles = useCallback(async (topicId: number) => {
-    const r = await fetchFiles(topicId);
+  const loadFiles = useCallback(async (topicId: number, folderId: number | null = null) => {
+    const r = await fetchFiles(topicId, folderId);
     setFiles(r.files);
+  }, []);
+
+  const loadFolders = useCallback(async (topicId: number, parentId: number | null = null) => {
+    const r = await fetchFolders(topicId, parentId);
+    setCurrentFolders(r.folders);
   }, []);
 
   const loadStats = useCallback(async () => {
@@ -378,15 +389,65 @@ function Dashboard() {
           i === index ? { ...t, progress: pct, status: status === 'error' ? 'error' : status === 'done' ? 'done' : 'uploading', error } : t
         ));
       },
+      currentFolder?.id ?? null,
       async () => {
-        await loadFiles(currentTopic.topicId);
+        await loadFiles(currentTopic.topicId, currentFolder?.id ?? null);
         await loadTopics();
+        loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
       }
     );
   };
 
   const handleUploadClick = () => {
     fileInputRef.current?.click();
+  };
+
+  // ─── Folder navigation ───
+  const handleEnterFolder = (folder: FolderEntry) => {
+    if (!currentTopic) return;
+    setFolderStack(prev => [...prev, { id: folder.id, name: folder.name }]);
+    setCurrentFolder({ id: folder.id, name: folder.name });
+    loadFolders(currentTopic.topicId, folder.id);
+    loadFiles(currentTopic.topicId, folder.id);
+  };
+
+  const handleFolderUp = () => {
+    if (!currentTopic) return;
+    if (folderStack.length <= 1) {
+      // Back to topic root
+      setFolderStack([]);
+      setCurrentFolder(null);
+      loadFolders(currentTopic.topicId, null);
+      loadFiles(currentTopic.topicId, null);
+    } else {
+      const newStack = folderStack.slice(0, -1);
+      const parent = newStack[newStack.length - 1] || null;
+      setFolderStack(newStack);
+      setCurrentFolder(parent);
+      loadFolders(currentTopic.topicId, parent?.id ?? null);
+      loadFiles(currentTopic.topicId, parent?.id ?? null);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!currentTopic || !newFolderName.trim()) return;
+    try {
+      await createFolder(currentTopic.topicId, newFolderName.trim(), currentFolder?.id ?? null);
+      setNewFolderName('');
+      loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
+    } catch (err: any) {
+      alert('Create folder failed: ' + err.message);
+    }
+  };
+
+  const handleDeleteFolder = async (folderId: number) => {
+    await deleteFolder(folderId);
+    if (currentTopic) loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
+  };
+
+  const handleRenameFolder = async (folderId: number, newName: string) => {
+    await renameFolder(folderId, newName);
+    if (currentTopic) loadFolders(currentTopic.topicId, currentFolder?.id ?? null);
   };
 
   // ─── Drag & Drop ───
@@ -508,8 +569,15 @@ function Dashboard() {
   const handleTopicClick = (topic: Topic | null) => {
     setActiveCategory(null);
     setCurrentTopic(topic);
-    if (topic) loadFiles(topic.topicId);
-    else setFiles([]);
+    setCurrentFolder(null);
+    setFolderStack([]);
+    if (topic) {
+      loadFiles(topic.topicId, null);
+      loadFolders(topic.topicId, null);
+    } else {
+      setFiles([]);
+      setCurrentFolders([]);
+    }
   };
 
   const fileIcon = (name: string) => {
@@ -578,8 +646,6 @@ function Dashboard() {
                   onClick={() => handleTopicClick(t)}
                   style={{ flex: 1, textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: currentTopic?.topicId === t.topicId ? '#334155' : 'transparent', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem' }}
                 >📁 {t.name} <span style={{ color: '#64748b', fontSize: '.75rem' }}>({t.fileCount})</span></button>
-                <button onClick={() => setRenaming({ id: t.topicId, name: t.name, type: 'topic' })} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: '.25rem', fontSize: '.75rem' }}>✎</button>
-                <button onClick={() => handleDeleteTopic(t.topicId)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '.25rem', fontSize: '.75rem' }}>✕</button>
               </div>
             ))}
             <div style={{ display: 'flex', gap: '.25rem', marginTop: '.5rem' }}>
@@ -638,10 +704,38 @@ function Dashboard() {
 
           {!activeCategory && currentTopic && (
             <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h2 style={{ margin: 0, fontSize: '1.125rem' }}>📁 {currentTopic.name}</h2>
-                <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+              {/* Breadcrumb */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem', flexWrap: 'wrap', gap: '.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '.35rem', fontSize: '.9rem', color: '#94a3b8' }}>
+                  <span style={{ color: '#e2e8f0', fontWeight: 600 }}>📁 {currentTopic.name}</span>
+                  {folderStack.map((f, i) => (
+                    <span key={f.id} style={{ display: 'flex', alignItems: 'center', gap: '.35rem' }}>
+                      <span style={{ color: '#475569' }}>/</span>
+                      {i === folderStack.length - 1 ? (
+                        <span style={{ color: '#38bdf8' }}>{f.name}</span>
+                      ) : (
+                        <button onClick={() => {
+                          // Navigate to this level
+                          const newStack = folderStack.slice(0, i + 1);
+                          setFolderStack(newStack);
+                          const target = newStack[newStack.length - 1];
+                          setCurrentFolder(target);
+                          loadFolders(currentTopic.topicId, target.id);
+                          loadFiles(currentTopic.topicId, target.id);
+                        }} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '.9rem', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
+                          {f.name}
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: '.35rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   <input ref={fileInputRef} type="file" multiple onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} />
+                  <input type="file" multiple webkitdirectory onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} id="folder-upload" />
+                  {folderStack.length > 0 && (
+                    <button onClick={handleFolderUp} style={{ padding: '.35rem .65rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>⬆ Up</button>
+                  )}
+                  <button onClick={() => document.getElementById('folder-upload')?.click()} style={{ padding: '.35rem .65rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>📁 Upload Folder</button>
                   <button onClick={handleUploadClick} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>
                     ⬆ Upload
                   </button>
@@ -688,17 +782,47 @@ function Dashboard() {
                 </div>
               )}
 
-              {files.length === 0 ? (
+              {/* New Folder Input */}
+              <div style={{ display: 'flex', gap: '.25rem', marginBottom: '.75rem' }}>
+                <input type="text" placeholder="New folder name..." value={newFolderName}
+                  onChange={e => setNewFolderName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleCreateFolder()}
+                  style={{ flex: 1, maxWidth: 280, padding: '.4rem .6rem', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '.8rem', outline: 'none' }} />
+                <button onClick={handleCreateFolder} style={{ padding: '.4rem .7rem', borderRadius: 6, border: 'none', background: '#475569', color: '#e2e8f0', cursor: 'pointer', fontSize: '.8rem' }}>📁 New Folder</button>
+              </div>
+
+              {currentFolders.length === 0 && files.length === 0 ? (
                 <div style={{
                   textAlign: 'center', padding: '4rem 0', color: '#64748b',
                   border: '2px dashed #334155', borderRadius: 12, marginTop: '1rem',
                 }}>
                   <p style={{ fontSize: '3rem', margin: '0 0 .5rem' }}>📂</p>
                   <p style={{ fontSize: '1.125rem' }}>This topic is empty</p>
-                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Drag & drop files here or click Upload to add files</p>
+                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Create a folder, upload files, or drag & drop</p>
                 </div>
               ) : (
-                <div style={{ display: 'grid', gap: '.5rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+                  {/* Folders */}
+                  {currentFolders.map(f => (
+                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.65rem 1rem', background: '#1e293b', borderRadius: 8, gap: '1rem', cursor: 'pointer' }}
+                      onClick={() => handleEnterFolder(f)}>
+                      <span style={{ fontSize: '1.25rem' }}>📁</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</p>
+                        <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#64748b' }}>{f.fileCount} files</p>
+                      </div>
+                      <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                        <button onClick={() => {
+                          const newName = prompt('Rename folder to:', f.name);
+                          if (newName && newName.trim()) handleRenameFolder(f.id, newName.trim());
+                        }} style={{ padding: '.3rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
+                        <button onClick={async () => {
+                          if (confirm(`Delete folder "${f.name}"? Files will be moved to parent.`)) await handleDeleteFolder(f.id);
+                        }} style={{ padding: '.3rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                  {/* Files */}
                   {files.map(f => (
                     <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: '#1e293b', borderRadius: 8, gap: '1rem' }}>
                       <span style={{ fontSize: '1.25rem' }}>{fileIcon(f.name)}</span>
