@@ -140,47 +140,67 @@ export const getDownloadUrl = (id: number) => {
 };
 
 /**
- * Download a file with XHR progress tracking.
+ * Download a file with real progress tracking.
+ * Uses fetch() + ReadableStream for accurate byte-level progress on both
+ * 302 redirects (single-chunk) and streaming responses (multi-chunk).
  * Downloads the full blob in-memory, then triggers browser save dialog.
  */
-export function downloadFile(
+export async function downloadFile(
   id: number,
   fileName: string,
   onProgress?: (pct: number) => void,
 ): Promise<void> {
   const token = getToken();
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', `${API_BASE}/api/files/${id}/download?dl=1`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.responseType = 'blob';
-
-    xhr.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const blob = xhr.response as Blob;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        resolve();
-      } else {
-        reject(new Error(`HTTP ${xhr.status}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error('Network error'));
-    xhr.send();
+  const res = await fetch(`${API_BASE}/api/files/${id}/download?dl=1`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    redirect: 'manual', // don't follow 302 — handle ourselves
   });
+
+  // Single-chunk: 302 redirect to Telegram CDN
+  if (res.status === 302) {
+    const dlUrl = res.headers.get('Location');
+    if (!dlUrl) throw new Error('No redirect location');
+    // Browser-download the CDN URL directly (no progress, but fastest path)
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    onProgress?.(100);
+    return;
+  }
+
+  // Multi-chunk: streaming response — track progress by bytes received
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+
+  const contentLength = parseInt(res.headers.get('Content-Length') || '0', 10);
+  const reader = res.body!.getReader();
+  const chunks: BlobPart[] = [];
+  let received = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (contentLength > 0 && onProgress) {
+      onProgress(Math.round((received / contentLength) * 100));
+    }
+  }
+
+  const blob = new Blob(chunks);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /**
