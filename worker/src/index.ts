@@ -9,6 +9,7 @@ import {
   listFiles,
   getFile,
   renameFile,
+  moveFile,
   deleteFile as deleteFileMeta,
   getAndDeleteFile,
   searchFiles,
@@ -278,6 +279,18 @@ app.put('/api/files/:id', async (c) => {
   const { name } = await c.req.json();
   if (!name || !name.trim()) return c.json({ error: 'File name is required' }, 400);
   const ok = await renameFile(c.env, id, name.trim());
+  return c.json({ ok });
+});
+
+// PUT /api/files/:id/move — move file to another topic
+app.put('/api/files/:id/move', async (c) => {
+  const id = Number(c.req.param('id'));
+  const { topicId } = await c.req.json();
+  if (!topicId) return c.json({ error: 'topicId is required' }, 400);
+  // Verify target topic exists
+  const target = await c.env.DB.prepare('SELECT topic_id FROM topics WHERE topic_id = ?').bind(topicId).first();
+  if (!target) return c.json({ error: 'Target topic not found' }, 404);
+  const ok = await moveFile(c.env, id, topicId);
   return c.json({ ok });
 });
 

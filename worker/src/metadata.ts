@@ -106,6 +106,13 @@ export async function updateFileManifest(
   return result.success;
 }
 
+export async function moveFile(env: Env, fileId: number, newTopicId: number): Promise<boolean> {
+  const result = await env.DB.prepare(
+    'UPDATE files SET topic_id = ?, updated_at = unixepoch() WHERE id = ?'
+  ).bind(newTopicId, fileId).run();
+  return result.success;
+}
+
 export async function renameFile(env: Env, fileId: number, name: string): Promise<boolean> {
   const result = await env.DB.prepare(
     'UPDATE files SET name = ?, updated_at = unixepoch() WHERE id = ?'

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFiles, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFileWithProgress } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFiles, deleteFile, renameFile, moveFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFileWithProgress } from './api/client';
 
 type View = 'login' | 'drive';
 type ShareCategory = 'active' | 'expiring' | 'expired';
@@ -263,6 +263,9 @@ function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [renaming, setRenaming] = useState<{ id: number; name: string; type: 'topic' | 'file' } | null>(null);
 
+  // Move file state
+  const [moveFileTarget, setMoveFileTarget] = useState<DriveFile | null>(null);
+
   // Multi-file upload state
   const [uploadQueue, setUploadQueue] = useState<UploadTask[]>([]);
   const [showUploadPanel, setShowUploadPanel] = useState(false);
@@ -422,6 +425,17 @@ function Dashboard() {
     await deleteFile(id);
     if (currentTopic) await loadFiles(currentTopic.topicId);
     await loadStats();
+  };
+
+  const handleMoveFile = async (fileId: number, targetTopicId: number) => {
+    try {
+      await moveFile(fileId, targetTopicId);
+      if (currentTopic) await loadFiles(currentTopic.topicId);
+      await loadTopics();
+    } catch (err: any) {
+      alert('Move failed: ' + err.message);
+    }
+    setMoveFileTarget(null);
   };
 
   const handleSearch = async () => {
@@ -719,6 +733,7 @@ function Dashboard() {
                           {downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? `${downloadProgress[f.id]}%` : '⬇ Download'}
                         </button>
                         <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#334155', color: '#38bdf8', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
+                        <button onClick={() => setMoveFileTarget(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#334155', color: '#a78bfa', cursor: 'pointer', fontSize: '.75rem' }}>📂 Move</button>
                         <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
                         <button onClick={() => handleDeleteFile(f.id)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
                       </div>
@@ -911,6 +926,38 @@ function Dashboard() {
               <button onClick={handleSaveEdit} disabled={savingEdit} style={{ padding: '.5rem 1.5rem', borderRadius: 8, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem', opacity: savingEdit ? .7 : 1 }}>
                 {savingEdit ? 'Saving...' : 'Save'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Move File Modal */}
+      {moveFileTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#e2e8f0' }}>📂 Move File</h3>
+              <button onClick={() => setMoveFileTarget(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+            <p style={{ fontSize: '.875rem', color: '#94a3b8', marginBottom: '1rem' }}>
+              Move <strong style={{ color: '#e2e8f0' }}>{moveFileTarget.name}</strong> to:
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem', maxHeight: 300, overflow: 'auto' }}>
+              {topics
+                .filter(t => t.topicId !== currentTopic?.topicId)
+                .map(t => (
+                <button key={t.topicId} onClick={() => handleMoveFile(moveFileTarget.id, t.topicId)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '.5rem', width: '100%', textAlign: 'left', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#e2e8f0', cursor: 'pointer', fontSize: '.875rem' }}>
+                  <span>📁</span>
+                  <span style={{ flex: 1 }}>{t.name}</span>
+                  <span style={{ color: '#64748b', fontSize: '.75rem' }}>{t.fileCount} files</span>
+                </button>
+              ))}
+              {topics.filter(t => t.topicId !== currentTopic?.topicId).length === 0 && (
+                <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem 0', fontSize: '.875rem' }}>
+                  No other topics available. Create a new topic first.
+                </p>
+              )}
             </div>
           </div>
         </div>

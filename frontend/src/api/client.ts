@@ -142,6 +142,7 @@ export async function uploadFiles(
 }
 
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+export const moveFile = (id: number, topicId: number) => req<{ ok: boolean }>(`/api/files/${id}/move`, { method: 'PUT', body: JSON.stringify({ topicId }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 
 export const getDlUrl = (id: number) => {
@@ -190,7 +191,7 @@ export function downloadFileWithProgress(
 
       // Stream with progress tracking
       const reader = res.body.getReader();
-      const chunks: Uint8Array[] = [];
+      const chunks: BlobPart[] = [];
       let received = 0;
 
       while (true) {
