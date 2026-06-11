@@ -42,11 +42,9 @@ export const fetchFiles = (topicId: number) => req<{ files: any[] }>(`/api/files
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
 
 /**
- * Upload a file to a topic. Files >45MB are split into chunks client-side.
+ * Upload a single file to a topic. Files >18MB are split into chunks client-side.
  */
-export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void): Promise<{ ok: boolean; fileId: number }> {
-  const token = getToken();
-
+function uploadSingleFile(topicId: number, file: File, token: string | null, onProgress?: (pct: number) => void): Promise<{ ok: boolean; fileId: number }> {
   // ─── Small files: single upload with XHR progress ───
   if (file.size <= CHUNK_THRESHOLD) {
     return new Promise((resolve, reject) => {
@@ -71,7 +69,7 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
   }
 
   // ─── Large files: chunked upload ───
-  const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — must be under Bot API 20MB download limit
+  const CHUNK_SIZE = 18 * 1024 * 1024;
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
   const uploadId = crypto.randomUUID();
 
@@ -112,7 +110,6 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
         xhr.send(fd);
       });
     }
-    // Finalize
     return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
       method: 'POST',
       body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks }),
@@ -122,6 +119,28 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
   return run();
 }
 
+/**
+ * Upload multiple files to a topic. Reports per-file progress.
+ */
+export async function uploadFiles(
+  topicId: number,
+  files: File[],
+  onFileProgress?: (index: number, pct: number, status: 'uploading' | 'done' | 'error', error?: string) => void,
+  onAllDone?: () => void,
+): Promise<void> {
+  const token = getToken();
+  for (let i = 0; i < files.length; i++) {
+    try {
+      onFileProgress?.(i, 0, 'uploading');
+      await uploadSingleFile(topicId, files[i], token, (pct) => onFileProgress?.(i, pct, 'uploading'));
+      onFileProgress?.(i, 100, 'done');
+    } catch (err: any) {
+      onFileProgress?.(i, 0, 'error', err.message);
+    }
+  }
+  onAllDone?.();
+}
+
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 
@@ -129,6 +148,49 @@ export const getDlUrl = (id: number) => {
   const token = getToken();
   return `/api/files/${id}/download?token=${token}`;
 };
+
+/**
+ * Download a file with progress tracking via XHR.
+ * Resolves when the blob is ready and triggers the browser save dialog.
+ */
+export function downloadFileWithProgress(
+  fileId: number,
+  fileName: string,
+  onProgress?: (pct: number) => void,
+): Promise<void> {
+  const token = getToken();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', `${API_BASE}/api/files/${fileId}/download?token=${token}`);
+    xhr.responseType = 'blob';
+    xhr.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      } else if (onProgress) {
+        onProgress(50); // indeterminate when no Content-Length
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const blob = xhr.response;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        if (onProgress) onProgress(100);
+        resolve();
+      } else {
+        reject(new Error(`Download failed (HTTP ${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Download network error'));
+    xhr.send();
+  });
+}
 
 export const createShare = (p: { fileId: number; password?: string; expiresIn?: number }) => req<{ ok: boolean; code: string; url: string }>('/api/shares', { method: 'POST', body: JSON.stringify(p) });
 export const fetchShares = (fileId: number) => req<{ shares: any[] }>(`/api/shares?fileId=${fileId}`);

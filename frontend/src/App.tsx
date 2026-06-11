@@ -1,19 +1,35 @@
-import { useState, useEffect, useCallback } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare } from './api/client';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFiles, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, fetchAllShares, updateShare, downloadFileWithProgress } from './api/client';
 
 type View = 'login' | 'drive';
-
 type ShareCategory = 'active' | 'expiring' | 'expired';
 
 interface Topic { topicId: number; name: string; fileCount: number; createdAt: number; }
 interface DriveFile { id: number; topicId: number; name: string; size: number; mimeType: string; chunkCount: number; createdAt: number; }
 interface ShareLink { code: string; fileId: number; fileName: string; fileSize: number; hasPassword: boolean; password: string | null; expiresAt: number | null; downloadCount: number; createdAt: number; }
 
+interface UploadTask {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  progress: number;
+  status: 'pending' | 'uploading' | 'done' | 'error';
+  error?: string;
+}
+
 function formatBytes(b: number): string {
   if (!b || b <= 0) return '0 B';
   const k = 1024, sizes = ['B','KB','MB','GB','TB'];
   const i = Math.floor(Math.log(b) / Math.log(k));
   return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return '1s';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
 }
 
 // ─── Login ───
@@ -190,19 +206,71 @@ const CATEGORY_META: Record<ShareCategory, { label: string; icon: string; color:
   expired: { label: 'Expired', icon: '❌', color: '#f87171' },
 };
 
+// ─── Preview Modal ───
+function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
+  const isVideo = file.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(file.name);
+  const isAudio = file.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a|wma)$/i.test(file.name);
+  const isImage = file.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(file.name);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const src = getDlUrl(file.id);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div style={{ maxWidth: '92%', maxHeight: '92%', position: 'relative' }}>
+        <button onClick={onClose}
+          style={{ position: 'absolute', top: -36, right: 0, background: '#1e293b', border: 'none', color: '#e2e8f0', fontSize: '1.2rem', borderRadius: 6, padding: '.25rem .5rem', cursor: 'pointer', zIndex: 10 }}>
+          ✕ Close (Esc)
+        </button>
+        {isVideo && (
+          <video controls autoPlay style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8 }} src={src}>
+            Your browser does not support video playback.
+          </video>
+        )}
+        {isAudio && (
+          <div style={{ background: '#1e293b', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320 }}>
+            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎵</div>
+            <p style={{ color: '#e2e8f0', fontSize: '1rem', margin: '0 0 .5rem', wordBreak: 'break-all' }}>{file.name}</p>
+            <p style={{ color: '#94a3b8', fontSize: '.875rem', margin: '0 0 1.5rem' }}>{formatBytes(file.size)}</p>
+            <audio controls autoPlay style={{ width: '100%' }} src={src}>
+              Your browser does not support audio playback.
+            </audio>
+          </div>
+        )}
+        {isImage && (
+          <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={src} alt={file.name} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Dashboard ───
 function Dashboard() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [stats, setStats] = useState({ fileCount: 0, totalSize: 0, topicCount: 0 });
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [newTopicName, setNewTopicName] = useState('');
   const [shareFile, setShareFile] = useState<DriveFile | null>(null);
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [renaming, setRenaming] = useState<{ id: number; name: string; type: 'topic' | 'file' } | null>(null);
+
+  // Multi-file upload state
+  const [uploadQueue, setUploadQueue] = useState<UploadTask[]>([]);
+  const [showUploadPanel, setShowUploadPanel] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Download progress state (fileId -> progress %)
+  const [downloadProgress, setDownloadProgress] = useState<Record<number, number>>({});
 
   // Share management state
   const [shares, setShares] = useState<ShareLink[]>([]);
@@ -215,6 +283,7 @@ function Dashboard() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [uploadStartTime, setUploadStartTime] = useState<number>(0);
 
   const loadTopics = useCallback(async () => {
     const r = await fetchTopics();
@@ -249,6 +318,15 @@ function Dashboard() {
 
   useEffect(() => { loadTopics(); loadStats(); loadShares(); }, [loadTopics, loadStats, loadShares]);
 
+  // Escape key to close preview/upload panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setPreviewFile(null); setShowUploadPanel(false); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const handleCreateTopic = async () => {
     if (!newTopicName.trim()) return;
     await createTopic(newTopicName.trim());
@@ -274,22 +352,70 @@ function Dashboard() {
     setRenaming(null);
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileInput = e.target;
-    const file = fileInput.files?.[0];
-    if (!file || !currentTopic) return;
-    setUploading(true);
-    setUploadProgress(0);
-    try {
-      await uploadFile(currentTopic.topicId, file, setUploadProgress);
-      await loadFiles(currentTopic.topicId);
-      await loadTopics();
-    } catch (err: any) {
-      alert('Upload failed: ' + err.message);
+  // ─── Multi-file upload ───
+  const handleFilesSelected = async (selectedFiles: FileList | File[]) => {
+    if (!currentTopic || selectedFiles.length === 0) return;
+
+    const tasks: UploadTask[] = Array.from(selectedFiles).map(f => ({
+      id: crypto.randomUUID(),
+      fileName: f.name,
+      fileSize: f.size,
+      progress: 0,
+      status: 'pending' as const,
+    }));
+    setUploadQueue(tasks);
+    setShowUploadPanel(true);
+    setUploadStartTime(Date.now());
+
+    await uploadFiles(
+      currentTopic.topicId,
+      Array.from(selectedFiles),
+      (index, pct, status, error) => {
+        setUploadQueue(prev => prev.map((t, i) =>
+          i === index ? { ...t, progress: pct, status: status === 'error' ? 'error' : status === 'done' ? 'done' : 'uploading', error } : t
+        ));
+      },
+      async () => {
+        await loadFiles(currentTopic.topicId);
+        await loadTopics();
+      }
+    );
+  };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  // ─── Drag & Drop ───
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOver(true); };
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only set false if actually leaving the drop zone (not entering a child)
+    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOver(false);
     }
-    setUploading(false);
-    setUploadProgress(0);
-    fileInput.value = '';
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files.length > 0) {
+      handleFilesSelected(e.dataTransfer.files);
+    }
+  };
+
+  // ─── Custom Download with Progress ───
+  const handleDownload = async (f: DriveFile) => {
+    setDownloadProgress(prev => ({ ...prev, [f.id]: 0 }));
+    try {
+      await downloadFileWithProgress(f.id, f.name, (pct) => {
+        setDownloadProgress(prev => ({ ...prev, [f.id]: pct }));
+      });
+    } catch (err: any) {
+      alert('Download failed: ' + err.message);
+    }
+    // Remove progress after a moment
+    setTimeout(() => {
+      setDownloadProgress(prev => { const n = { ...prev }; delete n[f.id]; return n; });
+    }, 2000);
   };
 
   const handleDeleteFile = async (id: number) => {
@@ -359,7 +485,6 @@ function Dashboard() {
   const filteredShares = !activeCategory || activeCategory === 'all'
     ? shares : shares.filter(s => getCategory(s) === activeCategory);
 
-  // Reset file view when clicking share section
   const handleCategoryClick = (cat: typeof activeCategory) => {
     setActiveCategory(cat);
     setCurrentTopic(null);
@@ -378,7 +503,7 @@ function Dashboard() {
     const icons: Record<string, string> = {
       png:'🖼️',jpg:'🖼️',jpeg:'🖼️',gif:'🖼️',webp:'🖼️',svg:'🖼️',
       mp4:'🎬',mkv:'🎬',mov:'🎬',webm:'🎬',
-      mp3:'🎵',wav:'🎵',flac:'🎵',
+      mp3:'🎵',wav:'🎵',flac:'🎵',ogg:'🎵',aac:'🎵',m4a:'🎵',wma:'🎵',
       pdf:'📕',doc:'📝',docx:'📝',txt:'📄',md:'📄',
       zip:'📦',rar:'📦','7z':'📦',tar:'📦',gz:'📦',
       js:'💻',ts:'💻',py:'💻',
@@ -387,8 +512,17 @@ function Dashboard() {
     return icons[ext] || '📁';
   };
 
+  const isMedia = (f: DriveFile) =>
+    f.mimeType?.startsWith('image/') || f.mimeType?.startsWith('video/') || f.mimeType?.startsWith('audio/') ||
+    /\.(png|jpg|jpeg|gif|webp|svg|mp4|webm|mkv|mov|mp3|wav|flac|ogg|aac|m4a|wma)$/i.test(f.name);
+
   const ac = (cat: string) => activeCategory === cat ? '#334155' : 'transparent';
   const acCol = (cat: string) => activeCategory === cat ? '#e2e8f0' : '#94a3b8';
+
+  const uploadingCount = uploadQueue.filter(t => t.status === 'uploading' || t.status === 'pending').length;
+  const doneCount = uploadQueue.filter(t => t.status === 'done').length;
+  const errorCount = uploadQueue.filter(t => t.status === 'error').length;
+  const uploadElapsed = uploadStartTime > 0 ? formatDuration(Date.now() - uploadStartTime) : '';
 
   return (
     <div style={{ minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' }}>
@@ -456,7 +590,27 @@ function Dashboard() {
         </aside>
 
         {/* ─── MAIN CONTENT ─── */}
-        <main style={{ flex: 1, padding: '1.5rem', overflow: 'auto' }}>
+        <main style={{ flex: 1, padding: '1.5rem', overflow: 'auto' }}
+          onDragOver={currentTopic ? handleDragOver : undefined}
+          onDragLeave={currentTopic ? handleDragLeave : undefined}
+          onDrop={currentTopic ? handleDrop : undefined}
+        >
+          {/* Drag overlay */}
+          {dragOver && currentTopic && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 500,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(56, 189, 248, 0.12)',
+              border: '2px dashed #38bdf8', borderRadius: 12,
+              margin: '1.5rem', pointerEvents: 'none',
+            }}>
+              <div style={{ textAlign: 'center', color: '#38bdf8' }}>
+                <div style={{ fontSize: '3rem' }}>📁</div>
+                <p style={{ fontSize: '1.25rem', fontWeight: 600, margin: '.5rem 0 0' }}>Drop files here to upload</p>
+                <p style={{ fontSize: '.875rem', margin: '.25rem 0 0', color: '#7dd3fc' }}>to {currentTopic.name}</p>
+              </div>
+            </div>
+          )}
 
           {/* ─── File list view ─── */}
           {!activeCategory && !currentTopic && (
@@ -473,22 +627,61 @@ function Dashboard() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                 <h2 style={{ margin: 0, fontSize: '1.125rem' }}>📁 {currentTopic.name}</h2>
                 <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
-                  <label style={{ padding: '.5rem 1rem', borderRadius: 6, background: uploading ? '#334155' : '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem' }}>
-                    {uploading ? `${uploadProgress}%` : '⬆ Upload'}
-                    <input type="file" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} />
-                  </label>
-                  {uploading && (
-                    <div style={{ width: 100, height: 4, background: '#334155', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{ width: `${uploadProgress}%`, height: '100%', background: '#38bdf8', borderRadius: 2, transition: 'width .2s' }} />
-                    </div>
-                  )}
+                  <input ref={fileInputRef} type="file" multiple onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); e.target.value = ''; }} style={{ display: 'none' }} />
+                  <button onClick={handleUploadClick} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#38bdf8', color: '#0f172a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>
+                    ⬆ Upload
+                  </button>
+                  <span style={{ fontSize: '.75rem', color: '#64748b' }}>or drag & drop</span>
                 </div>
               </div>
 
+              {/* Upload Queue Panel */}
+              {showUploadPanel && uploadQueue.length > 0 && (
+                <div style={{ marginBottom: '1rem', background: '#1e293b', borderRadius: 8, padding: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' }}>
+                    <span style={{ fontSize: '.875rem', fontWeight: 600, color: '#e2e8f0' }}>
+                      Uploading {doneCount + uploadingCount}/{uploadQueue.length} files
+                      {uploadingCount > 0 && ` (${uploadElapsed})`}
+                    </span>
+                    <button onClick={() => setShowUploadPanel(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '.875rem' }}>
+                      {uploadingCount === 0 ? '✕' : 'Hide'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '.35rem' }}>
+                    {uploadQueue.map((task, i) => (
+                      <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', fontSize: '.8rem' }}>
+                        <span style={{ width: 16, textAlign: 'center' }}>
+                          {task.status === 'done' ? '✅' : task.status === 'error' ? '❌' : task.status === 'uploading' ? '⬆️' : '⏳'}
+                        </span>
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: task.status === 'error' ? '#f87171' : '#e2e8f0' }}>
+                          {task.fileName}
+                        </span>
+                        <span style={{ color: '#64748b', width: 60, textAlign: 'right', fontSize: '.75rem' }}>
+                          {task.status === 'done' ? '100%' : task.status === 'error' ? task.error?.slice(0, 20) || 'Error' : `${task.progress}%`}
+                        </span>
+                        <div style={{ width: 80, height: 4, background: '#334155', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{
+                            width: `${task.status === 'done' ? 100 : task.status === 'error' ? 0 : task.progress}%`,
+                            height: '100%',
+                            background: task.status === 'error' ? '#f87171' : '#38bdf8',
+                            borderRadius: 2,
+                            transition: 'width .2s',
+                          }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {files.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '4rem 0', color: '#64748b' }}>
+                <div style={{
+                  textAlign: 'center', padding: '4rem 0', color: '#64748b',
+                  border: '2px dashed #334155', borderRadius: 12, marginTop: '1rem',
+                }}>
+                  <p style={{ fontSize: '3rem', margin: '0 0 .5rem' }}>📂</p>
                   <p style={{ fontSize: '1.125rem' }}>This topic is empty</p>
-                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Upload a file to get started</p>
+                  <p style={{ fontSize: '.875rem', marginTop: '.5rem' }}>Drag & drop files here or click Upload to add files</p>
                 </div>
               ) : (
                 <div style={{ display: 'grid', gap: '.5rem' }}>
@@ -498,18 +691,33 @@ function Dashboard() {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <p style={{ margin: 0, fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</p>
                         <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#64748b' }}>{formatBytes(f.size)}</p>
+                        {/* Download progress bar */}
+                        {downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 && (
+                          <div style={{ marginTop: '.25rem', display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                            <div style={{ flex: 1, height: 4, background: '#334155', borderRadius: 2, overflow: 'hidden' }}>
+                              <div style={{ width: `${downloadProgress[f.id]}%`, height: '100%', background: '#22c55e', borderRadius: 2, transition: 'width .2s' }} />
+                            </div>
+                            <span style={{ fontSize: '.7rem', color: '#22c55e' }}>⬇ {downloadProgress[f.id]}%</span>
+                          </div>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }}>
-                        {(f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp)$/i.test(f.name)) && (
-                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#334155', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>🖼 Preview</button>
+                        {isMedia(f) && (
+                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#334155', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>
+                            {f.mimeType?.startsWith('video/') ? '🎬 Preview' :
+                             f.mimeType?.startsWith('audio/') ? '🎵 Play' : '🖼 Preview'}
+                          </button>
                         )}
-                        {(f.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(f.name)) && (
-                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#334155', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>🎬 Preview</button>
-                        )}
-                        <a href={getDlUrl(f.id)} download={f.name}
-                          style={{ padding: '.4rem .75rem', borderRadius: 6, background: '#334155', color: '#e2e8f0', textDecoration: 'none', fontSize: '.75rem' }}>
-                          ⬇ Download
-                        </a>
+                        <button onClick={() => handleDownload(f)}
+                          disabled={downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100}
+                          style={{
+                            padding: '.4rem .75rem', borderRadius: 6,
+                            background: downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? '#334155' : '#22c55e',
+                            color: '#0f172a', border: 'none', fontSize: '.75rem', fontWeight: 600,
+                            cursor: downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? 'not-allowed' : 'pointer',
+                          }}>
+                          {downloadProgress[f.id] !== undefined && downloadProgress[f.id] < 100 ? `${downloadProgress[f.id]}%` : '⬇ Download'}
+                        </button>
                         <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#334155', color: '#38bdf8', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
                         <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
                         <button onClick={() => handleDeleteFile(f.id)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
@@ -570,7 +778,6 @@ function Dashboard() {
                         gap: '.5rem', padding: '.75rem 1rem', alignItems: 'center',
                         borderBottom: '1px solid #334155', fontSize: '.875rem',
                       }}>
-                        {/* File */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', minWidth: 0 }}>
                           <div style={{ width: 32, height: 32, borderRadius: 6, background: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '.75rem', flexShrink: 0 }}>📄</div>
                           <div style={{ minWidth: 0 }}>
@@ -579,7 +786,6 @@ function Dashboard() {
                           </div>
                         </div>
 
-                        {/* Share Link */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '.25rem', minWidth: 0 }}>
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontSize: '.75rem', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#38bdf8' }}>/dl/{share.code}</div>
@@ -594,7 +800,6 @@ function Dashboard() {
                           </button>
                         </div>
 
-                        {/* Password — eye only when stored password available */}
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
                             share.password ? (
@@ -619,17 +824,14 @@ function Dashboard() {
                           )}
                         </div>
 
-                        {/* Expiry */}
                         <div style={{ textAlign: 'center' }}>
                           <span style={{ color: expiry.color, fontWeight: 500, fontSize: '.8rem' }}>{expiry.label}</span>
                         </div>
 
-                        {/* Downloads */}
                         <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '.8rem' }}>
                           {share.downloadCount}
                         </div>
 
-                        {/* Actions */}
                         <div style={{ textAlign: 'right', display: 'flex', gap: '.25rem', justifyContent: 'flex-end' }}>
                           <button onClick={() => handleEditOpen(share)}
                             style={{ padding: '.35rem .5rem', borderRadius: 6, border: 'none', background: '#334155', color: '#94a3b8', cursor: 'pointer', fontSize: '.8rem', lineHeight: 1 }}>✏️</button>
@@ -649,19 +851,8 @@ function Dashboard() {
       {/* Share per-file modal */}
       {shareFile && <ShareManager file={shareFile} onClose={() => { setShareFile(null); loadShares(); }} />}
 
-      {/* Preview Modal */}
-      {previewFile && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setPreviewFile(null)}>
-          <div style={{ maxWidth: '90%', maxHeight: '90%', position: 'relative' }} onClick={e => e.stopPropagation()}>
-            <button onClick={() => setPreviewFile(null)} style={{ position: 'absolute', top: -32, right: 0, background: 'none', border: 'none', color: '#94a3b8', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
-            {previewFile.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(previewFile.name) ? (
-              <video controls autoPlay style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8 }} src={getDlUrl(previewFile.id)} />
-            ) : (
-              <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={getDlUrl(previewFile.id)} alt={previewFile.name} />
-            )}
-          </div>
-        </div>
-      )}
+      {/* Preview Modal — only closes via X button or Escape */}
+      {previewFile && <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />}
 
       {/* Rename Modal */}
       {renaming && (
@@ -679,7 +870,7 @@ function Dashboard() {
         </div>
       )}
 
-      {/* ─── Edit Share Modal ─── */}
+      {/* Edit Share Modal */}
       {editShare && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
           <div style={{ background: '#1e293b', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }}>

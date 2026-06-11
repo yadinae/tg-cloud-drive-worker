@@ -103,11 +103,12 @@ export async function downloadFileStream(
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
+        const isMedia = fileRecord.mime_type.startsWith('video/') || fileRecord.mime_type.startsWith('audio/') || fileRecord.mime_type.startsWith('image/');
         return new Response(res.body, {
           status: res.status,
           headers: new Headers({
-            'Content-Type': 'application/octet-stream',
-            'Content-Disposition': `attachment; filename="${fileRecord.name}"`,
+            'Content-Type': isMedia ? fileRecord.mime_type : 'application/octet-stream',
+            'Content-Disposition': isMedia ? 'inline' : `attachment; filename="${fileRecord.name}"`,
             'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
             'Accept-Ranges': 'bytes',
             ...(res.headers.get('Content-Range') ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
@@ -181,8 +182,8 @@ export async function downloadFileStream(
   return new Response(readable, {
     status: 200,
     headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${fileRecord.name}"`,
+      'Content-Type': fileRecord.mime_type,
+      'Content-Disposition': 'inline',
       'Content-Length': String(totalSize),
       'Accept-Ranges': 'bytes',
     },
