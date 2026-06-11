@@ -439,7 +439,7 @@ app.get('/api/files/:id/download', async (c) => {
   const id = Number(c.req.param('id'));
   const range = c.req.header('Range');
   const forceDownload = c.req.query('dl') === '1';
-  return downloadFileStream(c.env, id, range, forceDownload);
+  return downloadFileStream(c.env, id, range, forceDownload, false);
 });
 
 // ───── Share Links ─────
@@ -602,7 +602,7 @@ app.get('/dl/:code/raw', async (c) => {
   const code = c.req.param('code');
   const shareInfo = await getShare(code, c.env);
   if (!shareInfo.ok) return c.json({ error: shareInfo.error }, 404);
-  return downloadFileStream(c.env, shareInfo.share!.fileId, c.req.header('Range'));
+  return downloadFileStream(c.env, shareInfo.share!.fileId, c.req.header('Range'), true, true);
 });
 
 // ───── 404 ─────

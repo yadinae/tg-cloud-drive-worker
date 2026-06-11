@@ -87,6 +87,7 @@ export async function downloadFileStream(
   fileId: number,
   range?: string,
   forceDownload?: boolean,
+  allowRedirect?: boolean,  // true = 302 redirect (share page), false = proxy through worker (API)
 ): Promise<Response> {
   const fileRecord = await getFile(env, fileId);
   if (!fileRecord) {
@@ -101,46 +102,54 @@ export async function downloadFileStream(
     ? `attachment; filename="${fileRecord.name}"`
     : 'inline';
 
-  // ─── Single chunk: 302 redirect to Telegram CDN (browser downloads directly) ───
+  // ─── Single chunk ───
   if (manifest.length === 1) {
-    // Get Telegram file path (also used for share download URL)
-    const { getTelegramFilePath } = await import('./bot');
-    let cdnUrl: string | null = null;
+    if (allowRedirect) {
+      // 302 redirect to Telegram CDN (public share page — browser navigates directly)
+      const { getTelegramFilePath } = await import('./bot');
+      let cdnUrl: string | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          cdnUrl = await getTelegramFilePath(env, manifest[0].file_id);
+          break;
+        } catch (err: any) {
+          if (attempt === 2) break;
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+      if (cdnUrl) {
+        return new Response(null, {
+          status: 302,
+          headers: { 'Location': cdnUrl, 'Content-Disposition': disposition },
+        });
+      }
+      // Fallback: proxy through Worker
+    }
+    // Proxy through Worker (API download — same-origin XHR works with progress)
+    let lastErr: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        cdnUrl = await getTelegramFilePath(env, manifest[0].file_id);
-        break;
+        const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
+        const isMedia = fileRecord.mime_type.startsWith('video/') || fileRecord.mime_type.startsWith('audio/') || fileRecord.mime_type.startsWith('image/');
+        return new Response(res.body, {
+          status: res.status,
+          headers: new Headers({
+            'Content-Type': fileRecord.mime_type,
+            'Content-Disposition': disposition,
+            'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
+            'Accept-Ranges': 'bytes',
+            ...(range && res.headers.get('Content-Range')
+              ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
+          }),
+        });
       } catch (err: any) {
-        if (attempt === 2) {
-          // Fallback: proxy through Worker
-          const fallbackRes = await streamFileFromTelegram(env, manifest[0].file_id, range);
-          return new Response(fallbackRes.body, {
-            status: fallbackRes.status,
-            headers: new Headers({
-              'Content-Type': fileRecord.mime_type,
-              'Content-Disposition': disposition,
-              'Content-Length': fallbackRes.headers.get('Content-Length') || String(fileRecord.size),
-              'Accept-Ranges': 'bytes',
-              ...(range && fallbackRes.headers.get('Content-Range')
-                ? { 'Content-Range': fallbackRes.headers.get('Content-Range')! } : {}),
-            }),
-          });
-        }
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        lastErr = err;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
       }
     }
-    if (!cdnUrl) {
-      return new Response(JSON.stringify({ error: 'Failed to get download URL' }), {
-        status: 502, headers: { 'Content-Type': 'application/json' },
-      });
-    }
-    // 302 redirect — browser downloads directly from Telegram CDN
-    return new Response(null, {
-      status: 302,
-      headers: {
-        'Location': cdnUrl,
-        'Content-Disposition': disposition,
-      },
+    return new Response(JSON.stringify({ error: `Download failed after 3 attempts: ${lastErr?.message}` }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
     });
   }
 
