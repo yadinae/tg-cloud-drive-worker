@@ -913,10 +913,9 @@ function Dashboard() {
                         {(f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name)) && (
                           <button onClick={() => { audioHandlers.play(files.indexOf(f)); }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>▶ Play</button>
                         )}
-                        <a href={getDownloadUrl(f.id)} download={f.name}
-                          style={{ padding: '.4rem .75rem', borderRadius: 6, background: '#242424', color: '#ffffff', textDecoration: 'none', fontSize: '.75rem' }}>
+                        <button onClick={() => handleDownloadSingle(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#242424', color: '#ffffff', cursor: 'pointer', fontSize: '.75rem' }}>
                           ⬇ Download
-                        </a>
+                        </button>
                         <button onClick={() => setShareFile(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🔗 Share</button>
                         <button onClick={() => setRenaming({ id: f.id, name: f.name, type: 'file' })} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#888888', cursor: 'pointer', fontSize: '.75rem' }}>✎</button>
                         <button onClick={() => handleOpenMove(f)} style={{ padding: '.4rem .5rem', borderRadius: 6, border: 'none', background: '#242424', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>📂</button>
