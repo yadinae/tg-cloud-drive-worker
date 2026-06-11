@@ -87,7 +87,6 @@ export async function downloadFileStream(
   fileId: number,
   range?: string,
   forceDownload?: boolean,
-  allowRedirect?: boolean,  // true = 302 redirect (share page), false = proxy through worker (API)
 ): Promise<Response> {
   const fileRecord = await getFile(env, fileId);
   if (!fileRecord) {
@@ -102,30 +101,8 @@ export async function downloadFileStream(
     ? `attachment; filename="${fileRecord.name}"`
     : 'inline';
 
-  // ─── Single chunk ───
+  // ─── Single chunk: proxy through Worker — always proxy for reliability (no CDN CORS issues) ───
   if (manifest.length === 1) {
-    if (allowRedirect) {
-      // 302 redirect to Telegram CDN (public share page — browser navigates directly)
-      const { getTelegramFilePath } = await import('./bot');
-      let cdnUrl: string | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          cdnUrl = await getTelegramFilePath(env, manifest[0].file_id);
-          break;
-        } catch (err: any) {
-          if (attempt === 2) break;
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-        }
-      }
-      if (cdnUrl) {
-        return new Response(null, {
-          status: 302,
-          headers: { 'Location': cdnUrl, 'Content-Disposition': disposition },
-        });
-      }
-      // Fallback: proxy through Worker
-    }
-    // Proxy through Worker (API download — same-origin XHR works with progress)
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -166,7 +143,7 @@ export async function downloadFileStream(
     }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  const totalSize = manifest.reduce((sum, c) => sum + c.size, 0);
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
 
@@ -244,7 +221,6 @@ export async function downloadFileStream(
     headers: {
       'Content-Type': fileRecord.mime_type,
       'Content-Disposition': disposition,
-      'Content-Length': String(totalSize),
       'Accept-Ranges': 'bytes',
     },
   });
