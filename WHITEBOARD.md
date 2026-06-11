@@ -88,8 +88,14 @@ TG Cloud Drive Worker 全量对抗式评审 + 修复
 
 ## 5️⃣ Arena 决策状态
 
-**当前状态**：⏳ 修复中
+**当前状态**：⏳ P0 修复完成，P1 修复完成
 - ✅ 判别者已完成（功能 52/100 + 安全 + 性能 + 现实 6.5/10）
-- ⏳ P0 修复中...
-- ⬜ P1 修复中...
+- ✅ **P0-1** 密码明文存储 → 已移除明文 `password` 字段，仅保留 hash
+- ✅ **P0-2** Token 移出 URL → 下载链接不再包含 `?token=`
+- ✅ **P1-1** 分享页 XSS → 添加 `escapeHtml()` 转义文件名
+- ✅ **P1-2** Topic 删除 → 添加 `DELETE FROM folders WHERE topic_id = ?`
+- ✅ **P1-3** Topic rename/delete → 检查 Telegram API 响应
+- ✅ **P1-4** D1 全部查询 → 添加 `LIMIT 500/1000` 防全表扫描
+- ✅ **P1-5** Health check → 不再每次运行 ensureSchema
+- ⬜ P2 修复（待下一轮）
 - ⬜ Arena 验证
