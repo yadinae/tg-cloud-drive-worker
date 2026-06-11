@@ -215,7 +215,9 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
   try {
     let cursor: string | undefined;
     do {
-      const list = await env.SHARES.list({ prefix: SHARE_PREFIX, cursor });
+      const opts: any = { prefix: SHARE_PREFIX };
+      if (cursor) opts.cursor = cursor;
+      const list = await env.SHARES.list(opts);
       for (const key of list.keys) {
         const raw = await env.SHARES.get(key.name);
         if (raw) {
@@ -233,7 +235,7 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
           });
         }
       }
-      cursor = list.cursor;
+      cursor = (list as any).cursor;
     } while (cursor);
   } catch (err) {
     console.error('listAllShares error:', err);

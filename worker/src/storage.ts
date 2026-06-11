@@ -97,36 +97,54 @@ export async function downloadFileStream(
   }
 
   const manifest: ChunkInfo[] = JSON.parse(fileRecord.manifest);
+  const disposition = forceDownload || !fileRecord.mime_type.startsWith('image/')
+    ? `attachment; filename="${fileRecord.name}"`
+    : 'inline';
 
-  // ─── Single chunk: proxy through Worker with retry ───
+  // ─── Single chunk: 302 redirect to Telegram CDN (browser downloads directly) ───
   if (manifest.length === 1) {
-    let lastErr: Error | null = null;
+    // Get Telegram file path (also used for share download URL)
+    const { getTelegramFilePath } = await import('./bot');
+    let cdnUrl: string | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
-        const isMedia = fileRecord.mime_type.startsWith('video/') || fileRecord.mime_type.startsWith('audio/') || fileRecord.mime_type.startsWith('image/');
-        return new Response(res.body, {
-          status: res.status,
-          headers: new Headers({
-            'Content-Type': fileRecord.mime_type,
-            'Content-Disposition': forceDownload || !isMedia ? `attachment; filename="${fileRecord.name}"` : 'inline',
-            'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
-            'Accept-Ranges': 'bytes',
-            ...(res.headers.get('Content-Range') ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
-          }),
-        });
+        cdnUrl = await getTelegramFilePath(env, manifest[0].file_id);
+        break;
       } catch (err: any) {
-        lastErr = err;
-        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        if (attempt === 2) {
+          // Fallback: proxy through Worker
+          const fallbackRes = await streamFileFromTelegram(env, manifest[0].file_id, range);
+          return new Response(fallbackRes.body, {
+            status: fallbackRes.status,
+            headers: new Headers({
+              'Content-Type': fileRecord.mime_type,
+              'Content-Disposition': disposition,
+              'Content-Length': fallbackRes.headers.get('Content-Length') || String(fileRecord.size),
+              'Accept-Ranges': 'bytes',
+              ...(range && fallbackRes.headers.get('Content-Range')
+                ? { 'Content-Range': fallbackRes.headers.get('Content-Range')! } : {}),
+            }),
+          });
+        }
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
       }
     }
-    return new Response(JSON.stringify({ error: `Download failed after 3 attempts: ${lastErr?.message}` }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json' },
+    if (!cdnUrl) {
+      return new Response(JSON.stringify({ error: 'Failed to get download URL' }), {
+        status: 502, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // 302 redirect — browser downloads directly from Telegram CDN
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': cdnUrl,
+        'Content-Disposition': disposition,
+      },
     });
   }
 
-  // ─── Multi-chunk: parallel fetch, ordered output ───
+  // ─── Multi-chunk: parallel fetch (max 3), ordered write ───
   if (range) {
     console.warn('Range requests not yet supported for multi-chunk files');
   }
@@ -135,47 +153,79 @@ export async function downloadFileStream(
   const tooBigChunk = manifest.find(c => c.size > 20 * 1024 * 1024);
   if (tooBigChunk) {
     return new Response(JSON.stringify({
-      error: `Chunk ${tooBigChunk.part_index} is ${(tooBigChunk.size / 1024 / 1024).toFixed(0)}MB, exceeding Bot API 20MB download limit. Re-upload the file with the updated client (18MB chunks).`
-    }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+      error: `Chunk ${tooBigChunk.part_index} is ${(tooBigChunk.size / 1024 / 1024).toFixed(0)}MB, exceeding Bot API 20MB download limit.`
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
   const totalSize = manifest.reduce((sum, c) => sum + c.size, 0);
-
-  // Use a simple approach: fetch chunks sequentially but with retry per chunk
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
 
-  // Write content-type+disposition header early so browser starts receiving
   (async () => {
-    for (let i = 0; i < manifest.length; i++) {
-      let success = false;
-      for (let attempt = 0; attempt < 3 && !success; attempt++) {
-        try {
-          const chunkRes = await streamFileFromTelegram(env, manifest[i].file_id);
-          const reader = chunkRes.body?.getReader();
-          if (!reader) throw new Error(`Failed to read chunk ${i}`);
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            await writer.write(value);
+    try {
+      // Buffer for out-of-order chunks (index → Uint8Array)
+      const buffer = new Array<Uint8Array | null>(manifest.length).fill(null);
+      let nextIdx = 0;          // Next chunk index to write
+      let nextFetchIdx = 0;     // Next chunk index to start fetching
+      let inFlight = 0;         // Currently fetching
+      const MAX_PARALLEL = 3;
+
+      // Fetch one chunk and store in buffer
+      async function fetchAndBuffer(idx: number) {
+        const chunk = manifest[idx];
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const res = await streamFileFromTelegram(env, chunk.file_id);
+            const reader = res.body?.getReader();
+            if (!reader) throw new Error('No reader');
+            const parts: Uint8Array[] = [];
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              parts.push(value);
+            }
+            // Concatenate
+            const total = parts.reduce((s, p) => s + p.length, 0);
+            const merged = new Uint8Array(total);
+            let offset = 0;
+            for (const p of parts) { merged.set(p, offset); offset += p.length; }
+            buffer[idx] = merged;
+            return;
+          } catch (err: any) {
+            if (attempt === 2) throw new Error(`Chunk ${idx} failed: ${err.message}`);
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
           }
-          success = true;
-        } catch (err: any) {
-          console.error(`Chunk ${i} attempt ${attempt + 1} failed:`, err.message);
-          if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
         }
       }
-      if (!success) {
-        try {
-          await writer.write(new TextEncoder().encode(
-            JSON.stringify({ error: `Chunk ${i} download failed after 3 attempts` })
-          ));
-        } catch {}
-        break;
+
+      // Fire-and-forget fetchers
+      function startFetch(idx: number) {
+        inFlight++;
+        fetchAndBuffer(idx).catch(err => {
+          console.error(err.message);
+          buffer[idx] = new TextEncoder().encode(JSON.stringify({ error: err.message }));
+        }).finally(() => { inFlight--; });
       }
+
+      // Main loop: keep filling up to MAX_PARALLEL, write when ordered
+      while (nextIdx < manifest.length) {
+        // Launch new fetches
+        while (inFlight < MAX_PARALLEL && nextFetchIdx < manifest.length) {
+          startFetch(nextFetchIdx++);
+        }
+        // If the next chunk is ready, write it (and any subsequent ready chunks)
+        while (nextIdx < manifest.length && buffer[nextIdx] !== null) {
+          await writer.write(buffer[nextIdx]!);
+          buffer[nextIdx] = null;
+          nextIdx++;
+        }
+        // If nothing to write and nothing in-flight, break (all done or all errored)
+        if (inFlight === 0) break;
+        // Small yield to event loop
+        await new Promise(r => setTimeout(r, 5));
+      }
+    } catch (err: any) {
+      console.error('Multi-chunk stream error:', err.message);
     }
     await writer.close();
   })();
@@ -184,7 +234,7 @@ export async function downloadFileStream(
     status: 200,
     headers: {
       'Content-Type': fileRecord.mime_type,
-      'Content-Disposition': `attachment; filename="${fileRecord.name}"`,
+      'Content-Disposition': disposition,
       'Content-Length': String(totalSize),
       'Accept-Ranges': 'bytes',
     },
