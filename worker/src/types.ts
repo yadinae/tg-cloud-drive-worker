@@ -7,6 +7,13 @@ export interface Env {
   TG_BOT_TOKEN: string;
   STORAGE_CHANNEL_ID: string;
   DRIVE_AUTH_TOKEN: string;
+  /** Optional: custom Bot API base URL (e.g. self-hosted Bot API server).
+   *  Defaults to https://api.telegram.org when not set.
+   *  Enables >2GB file uploads via local Bot API server. */
+  TG_API_BASE_URL?: string;
+  /** Optional: max concurrent Bot API calls per instance (default: 2).
+   *  Helps prevent 429 rate limits under heavy upload concurrency. */
+  TG_API_CONCURRENCY?: string;  // parsed as number, default 2
 }
 
 // ───── D1 Row Types ─────
@@ -76,7 +83,6 @@ export interface ShareResponse {
   fileName: string;
   fileSize: number;
   hasPassword: boolean;
-  password: string | null;   // plaintext for display
   expiresAt: number | null;
   downloadCount: number;
   createdAt: number;

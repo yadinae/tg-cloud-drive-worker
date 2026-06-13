@@ -153,7 +153,9 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
                           <span style={{ color: s.password ? '#faff69' : '#888888', fontSize: '.75rem', fontFamily: 'monospace' }}>{s.password || '(hash only)'}</span>
                         )}
                       </>
-                    ) : <span>—</span>}
+                    ) : (
+                      <span style={{ color: '#5a5a5a' }}>—</span>
+                    )}
                   </td>
                   <td style={{ textAlign: 'center', padding: '.5rem', color: '#888888' }}>{s.downloadCount}</td>
                   <td style={{ textAlign: 'right', padding: '.5rem' }}>
@@ -375,6 +377,16 @@ function Dashboard() {
       }
       // Sort by depth (shallow first so parent folders exist)
       const sortedDirs = Array.from(dirMap.entries()).sort((a, b) => a[0].split('/').length - b[0].split('/').length);
+      // Cache all folders for this topic to avoid N×M API calls
+      let folderCache: Folder[] = [];
+      try { const r = await fetchFolders(currentTopic.topicId); folderCache = r.folders || []; } catch {}
+
+      // Build lookup: parentId → Map<name, Folder>
+      function resolveFolderId(leafName: string, parentId: number | null): number | null {
+        const existing = folderCache.find((f: Folder) => f.name === leafName && f.parentId === parentId);
+        return existing?.id ?? null;
+      }
+
       // Create folder tree and upload
       const pathFolderMap = new Map<string, number | null>();
       pathFolderMap.set('', currentFolder); // root
@@ -388,10 +400,9 @@ function Dashboard() {
         let folderId: number | null = parentId;
         if (parts.length > 0) {
           const leafName = parts[parts.length - 1];
-          const r = await fetchFolders(currentTopic.topicId, parentId);
-          const existing = (r.folders || []).find((f: Folder) => f.name === leafName);
-          if (existing) {
-            folderId = existing.id;
+          const existingId = resolveFolderId(leafName, parentId);
+          if (existingId !== null) {
+            folderId = existingId;
           } else {
             const cr = await createFolderApi(currentTopic.topicId, leafName, parentId);
             folderId = cr.folder?.id ?? null;
@@ -520,9 +531,9 @@ function Dashboard() {
     setDownloadProgress({ active: false, pct: 0 });
   };
 
-  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounter.current++; if (e.dataTransfer.items && e.dataTransfer.items.length > 0) setDragging(true); };
+  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounter.current++; if (e.dataTransfer.items && e.dataTransfer.items.length > 0) { setDragging(true); e.dataTransfer.effectAllowed = 'copy'; } };
   const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounter.current--; if (dragCounter.current <= 0) { dragCounter.current = 0; setDragging(false); } };
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); };
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; };
   const handleDropFiles = async (fileList: FileList) => {
     if (!fileList.length || !currentTopic) return;
     // Check if files have folder structure (webkitRelativePath)
@@ -558,6 +569,13 @@ function Dashboard() {
         dirMap.get(dirPath)!.push(file);
       }
       const sortedDirs = Array.from(dirMap.entries()).sort((a, b) => a[0].split('/').length - b[0].split('/').length);
+      // Cache all folders to avoid N×M API calls
+      let folderCache: Folder[] = [];
+      try { const r = await fetchFolders(currentTopic.topicId); folderCache = r.folders || []; } catch {}
+      const resolveFolderId = (leafName: string, parentId: number | null): number | null => {
+        const existing = folderCache.find((f: Folder) => f.name === leafName && f.parentId === parentId);
+        return existing?.id ?? null;
+      };
       const pathFolderMap = new Map<string, number | null>();
       pathFolderMap.set('', currentFolder);
       let total = 0, done = 0;
@@ -569,10 +587,9 @@ function Dashboard() {
         let folderId: number | null = parentId;
         if (parts.length > 0) {
           const leafName = parts[parts.length - 1];
-          const r = await fetchFolders(currentTopic.topicId, parentId);
-          const existing = (r.folders || []).find((x: Folder) => x.name === leafName);
-          if (existing) {
-            folderId = existing.id;
+          const existingId = resolveFolderId(leafName, parentId);
+          if (existingId !== null) {
+            folderId = existingId;
           } else {
             const cr = await createFolderApi(currentTopic.topicId, leafName, parentId);
             folderId = cr.folder?.id ?? null;
@@ -591,24 +608,146 @@ function Dashboard() {
     setUploading(false); setUploadProgress(0);
     setUploadingFolderName('');
   };
-  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setDragging(false); dragCounter.current = 0; if (e.dataTransfer.files && e.dataTransfer.files.length > 0) handleDropFiles(e.dataTransfer.files); };
+  // ─── File traversal helpers for drag-drop folders ───
+  const traverseEntry = async (entry: any, basePath: string): Promise<Array<{ file: File; relPath: string }>> => {
+    const results: Array<{ file: File; relPath: string }> = [];
+    if (entry.isFile) {
+      const f = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
+      results.push({ file: f, relPath: basePath });
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      let entries: FileSystemEntry[] = [];
+      do {
+        entries = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+        for (const child of entries) {
+          const childPath = basePath ? `${basePath}/${child.name}` : child.name;
+          const childResults = await traverseEntry(child, childPath);
+          results.push(...childResults);
+        }
+      } while (entries.length > 0);
+    }
+    return results;
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    setDragging(false); dragCounter.current = 0;
+    const dt = e.dataTransfer;
+    if (!dt) return;
+
+    // Fallback: if items not available but files are, go directly
+    if (!dt.items || dt.items.length === 0) {
+      if (dt.files && dt.files.length > 0) {
+        handleDropFiles(dt.files);
+      }
+      return;
+    }
+
+    // Check if any item is a directory using webkitGetAsEntry
+    let hasDir = false;
+    const allItems: Array<{ file: File; relPath: string }> = [];
+    for (let i = 0; i < dt.items.length; i++) {
+      const entry = (dt.items[i] as any).webkitGetAsEntry?.();
+      if (!entry) {
+        // Fallback for items that don't support webkitGetAsEntry (e.g., plain text)
+        // Collect as regular file if available
+        if (dt.files[i]) allItems.push({ file: dt.files[i], relPath: '' });
+        continue;
+      }
+      if (entry.isDirectory) {
+        // Directory → traverse recursively
+        const results = await traverseEntry(entry, '');
+        for (const r of results) {
+          hasDir = true;
+          allItems.push(r);
+        }
+      } else {
+        // Regular file → collect directly with empty relPath
+        const f = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
+        allItems.push({ file: f, relPath: '' });
+      }
+    }
+
+    if (hasDir && allItems.length > 0 && currentTopic) {
+      // Folder drop — use folder upload logic
+      setUploading(true); setUploadProgress(0);
+      const rootName = allItems[0].relPath.split('/')[0] || 'folder';
+      setUploadingFolderName(rootName);
+      try {
+        const dirMap = new Map<string, typeof allItems>();
+        for (const { file, relPath } of allItems) {
+          const parts = relPath.split('/');
+          const dirPath = parts.slice(0, -1).join('/');
+          if (!dirMap.has(dirPath)) dirMap.set(dirPath, []);
+          dirMap.get(dirPath)!.push({ file, relPath });
+        }
+        const sortedDirs = Array.from(dirMap.entries()).sort((a, b) => a[0].split('/').length - b[0].split('/').length);
+        // Cache all folders to avoid N×M API calls
+        let folderCache: Folder[] = [];
+        try { const r = await fetchFolders(currentTopic.topicId); folderCache = r.folders || []; } catch {}
+        const resolveFolderId = (leafName: string, parentId: number | null): number | null => {
+          const existing = folderCache.find((f: Folder) => f.name === leafName && f.parentId === parentId);
+          return existing?.id ?? null;
+        };
+        const pathFolderMap = new Map<string, number | null>();
+        pathFolderMap.set('', currentFolder);
+        let total = 0, done = 0;
+        for (const [, f] of sortedDirs) total += f.length;
+        for (const [dirPath, f] of sortedDirs) {
+          const parts = dirPath ? dirPath.split('/') : [];
+          const parentPath = parts.slice(0, -1).join('/');
+          const parentId = pathFolderMap.get(parentPath) ?? currentFolder;
+          let folderId: number | null = parentId;
+          if (parts.length > 0) {
+            const leafName = parts[parts.length - 1];
+            const existingId = resolveFolderId(leafName, parentId);
+            if (existingId !== null) { folderId = existingId; }
+            else {
+              const cr = await createFolderApi(currentTopic.topicId, leafName, parentId);
+              folderId = cr.folder?.id ?? null;
+            }
+          }
+          pathFolderMap.set(dirPath, folderId);
+          for (const { file } of f) {
+            await uploadFile(currentTopic.topicId, file, (pct) => setUploadProgress(Math.round(((done * 100 + pct) / total))), folderId);
+            done++;
+          }
+        }
+        await loadFiles(currentTopic.topicId, currentFolder);
+        await loadFolders(currentTopic.topicId, currentFolder);
+        await loadTopics();
+      } catch (err: any) { alert('Upload failed: ' + (err.message || 'Network error')); }
+      setUploading(false); setUploadProgress(0); setUploadingFolderName('');
+    } else if (dt.files && dt.files.length > 0) {
+      // Regular file drop
+      handleDropFiles(dt.files);
+    }
+  };
 
   // ─── Audio Player ───
   useEffect(() => {
     const audioFiles = files.filter(f => f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name));
-    if (audioFiles.length === 0) {
-      setAudioQueue([]);
-      return;
+    if (audioFiles.length > 0 && audioQueue.length === 0) {
+      setAudioQueue(audioFiles);
     }
-    // Never auto-start — user clicks ▶ to play
-    setAudioQueue(audioFiles);
-  }, [files]);
+  }, [files, audioQueue.length]);
+
+  // Auto-play when track changes (user clicks ▶ in file list)
+  useEffect(() => {
+    if (audioIndex >= 0 && audioRef.current) {
+      audioRef.current.play().catch(() => {});
+    }
+  }, [audioIndex]);
 
   const audioHandlers = {
     play(idx: number) {
-      if (idx < 0 || idx >= audioQueue.length) return;
-      setAudioIndex(idx);
-      setIsPlaying(true);
+      if (idx < 0 || idx >= files.length) return;
+      // Build queue from current folder's audio files
+      const audioFiles = files.filter(f => f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name));
+      const audioIdx = audioFiles.findIndex(af => af.id === files[idx]?.id);
+      if (audioIdx < 0) return;
+      setAudioQueue(audioFiles);
+      setAudioIndex(audioIdx);
     },
     togglePlay() {
       if (!audioRef.current) return;
@@ -644,6 +783,207 @@ function Dashboard() {
     const s = Math.floor(t % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
+
+  // ─── Preview Modal (images, video, audio, PDF, Markdown, code) ───
+  function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
+    const [textContent, setTextContent] = useState<string | null>(null);
+    const [loading, setLoading] = useState(true);
+    const dlUrl = getDlUrl(file.id);
+
+    const isVideo = file.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(file.name);
+    const isAudio = file.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(file.name);
+    const isImage = file.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(file.name);
+    const isSvg = /\.svg$/i.test(file.name);
+    const isPdf = file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.name);
+    const isMarkdown = /\.md$/i.test(file.name);
+    const isCode = /\.(js|ts|jsx|tsx|py|java|go|rs|c|cpp|h|sh|bash|yaml|yml|json|xml|css|scss|sql|rb|php|rs|toml)$/i.test(file.name);
+    const isText = /\.(txt|log|cfg|conf|ini|env)$/i.test(file.name);
+    const isRenderableText = isMarkdown || isCode || isText;
+
+    // Fetch text/markdown/code content for rendering
+    useEffect(() => {
+      if (!isRenderableText) return;
+      setLoading(true);
+      fetch(dlUrl)
+        .then(res => res.text())
+        .then(text => { setTextContent(text); setLoading(false); })
+        .catch(() => { setTextContent('Failed to load file content'); setLoading(false); });
+    }, [file.id, dlUrl, isRenderableText]);
+
+    // Simple Markdown renderer (block-aware, no extra deps)
+    const renderMarkdown = (md: string): string => {
+      // Process code blocks first to protect their content
+      const codeBlocks: string[] = [];
+      let processed = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+        const idx = codeBlocks.length;
+        codeBlocks.push(`<pre style="background:#121212;padding:.75rem;border-radius:6px;overflow:auto;font-size:.8rem;line-height:1.4;margin:.75rem 0"><code>${code.trim()}</code></pre>`);
+        return `\n\n\`\`\`BLOCK${idx}\n\n`;
+      });
+
+      // Split into blocks by blank lines
+      const blocks = processed.split(/\n\n+/);
+      const out: string[] = [];
+
+      for (let block of blocks) {
+        block = block.trim();
+        if (!block) continue;
+
+        // Restore code blocks
+        const codeBlockMatch = block.match(/^```BLOCK(\d+)$/);
+        if (codeBlockMatch) {
+          out.push(codeBlocks[parseInt(codeBlockMatch[1])]);
+          continue;
+        }
+
+        // Headers
+        if (/^### /.test(block)) {
+          out.push(`<h3 style="color:#faff69;margin:1rem 0 .5rem;font-size:1.05rem">${inlineMd(block.slice(4))}</h3>`);
+          continue;
+        }
+        if (/^## /.test(block)) {
+          out.push(`<h2 style="color:#faff69;margin:1.2rem 0 .6rem;font-size:1.15rem">${inlineMd(block.slice(3))}</h2>`);
+          continue;
+        }
+        if (/^# /.test(block)) {
+          out.push(`<h1 style="color:#faff69;margin:1.5rem 0 .75rem;font-size:1.3rem">${inlineMd(block.slice(2))}</h1>`);
+          continue;
+        }
+
+        // Blockquote
+        if (/^> /.test(block)) {
+          const quoteLines = block.split('\n').map(l => l.replace(/^> /, '')).join('<br />');
+          out.push(`<blockquote style="border-left:3px solid #faff69;padding:.5rem .75rem;margin:.75rem 0;color:#cccccc;background:#1a1a1a;border-radius:0 6px 6px 0">${inlineMd(quoteLines)}</blockquote>`);
+          continue;
+        }
+
+        // Horizontal rule
+        if (/^-{3,}$/.test(block)) {
+          out.push('<hr style="border:none;border-top:1px solid #334155;margin:1rem 0" />');
+          continue;
+        }
+
+        // Unordered list
+        if (/^[-*] /.test(block)) {
+          const items = block.split('\n').map(l => l.replace(/^[-*] /, '').trim()).filter(Boolean);
+          const lis = items.map(item => `<li style="margin:.25rem 0;color:#cccccc">${inlineMd(item)}</li>`).join('\n');
+          out.push(`<ul style="padding-left:1.5rem;margin:.5rem 0">${lis}</ul>`);
+          continue;
+        }
+
+        // Ordered list
+        if (/^\d+\. /.test(block)) {
+          const items = block.split('\n').map(l => l.replace(/^\d+\. /, '').trim()).filter(Boolean);
+          const lis = items.map(item => `<li style="margin:.25rem 0;color:#cccccc">${inlineMd(item)}</li>`).join('\n');
+          out.push(`<ol style="padding-left:1.5rem;margin:.5rem 0">${lis}</ol>`);
+          continue;
+        }
+
+        // Regular paragraph
+        const lines = block.split('\n').map(l => inlineMd(l)).join('<br />');
+        out.push(`<p style="margin:.5rem 0;line-height:1.6">${lines}</p>`);
+      }
+
+      return out.join('\n');
+    };
+
+    // Inline markdown processing (bold, italic, code, links, images)
+    function inlineMd(text: string): string {
+      return text
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`([^`]+)`/g, '<code style="background:#242424;padding:.15em .4em;border-radius:3px;font-size:.85em">$1</code>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#7dd3fc">$1</a>')
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:6px;margin:.5rem 0" />');
+    }
+
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+        <div style={{ maxWidth: '95%', maxHeight: '92%', minWidth: 320, position: 'relative' }} onClick={e => e.stopPropagation()}>
+          <button onClick={onClose} style={{ position: 'absolute', top: -36, right: 0, background: 'rgba(0,0,0,.5)', border: 'none', color: '#cccccc', fontSize: '1.5rem', cursor: 'pointer', padding: '.25rem .5rem', borderRadius: 6, lineHeight: 1, zIndex: 1 }}>✕</button>
+
+          {/* Video */}
+          {isVideo && (
+            <video controls autoPlay style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8 }} src={dlUrl}>
+              <p style={{ color: '#888888' }}>Your browser doesn't support video playback. <a href={dlUrl} style={{ color: '#7dd3fc' }}>Download instead</a></p>
+            </video>
+          )}
+
+          {/* Audio */}
+          {isAudio && (
+            <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320, border: '1px solid #2a2a2a' }}>
+              <p style={{ fontSize: '3rem', margin: '0 0 .5rem' }}>🎵</p>
+              <p style={{ color: '#ffffff', margin: '0 0 1.5rem', fontSize: '1rem', wordBreak: 'break-all' }}>{file.name}</p>
+              <audio controls autoPlay style={{ width: '100%' }} src={dlUrl} />
+            </div>
+          )}
+
+          {/* Image (including SVG) */}
+          {isImage && (
+            <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={dlUrl} alt={file.name} />
+          )}
+
+          {/* PDF — browser's built-in viewer */}
+          {isPdf && (
+            <iframe src={dlUrl} style={{ width: '85vw', height: '85vh', border: 'none', borderRadius: 8, background: '#ffffff' }} title={file.name} />
+          )}
+
+          {/* Markdown — rendered */}
+          {isMarkdown && (
+            <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem 2rem', maxWidth: 720, maxHeight: '85vh', overflow: 'auto', border: '1px solid #2a2a2a', fontSize: '.875rem', lineHeight: 1.6, color: '#cccccc' }}>
+              <h2 style={{ margin: '0 0 1rem', color: '#faff69', fontSize: '1.25rem' }}>📝 {file.name}</h2>
+              {loading ? (
+                <p style={{ color: '#888888' }}>Loading...</p>
+              ) : textContent ? (
+                <div dangerouslySetInnerHTML={{ __html: renderMarkdown(textContent) }} />
+              ) : (
+                <p style={{ color: '#f87171' }}>Failed to load content</p>
+              )}
+            </div>
+          )}
+
+          {/* Code / Text — syntax-highlighted */}
+          {isCode && (
+            <div style={{ background: '#121212', borderRadius: 12, padding: '1.25rem', maxWidth: 800, maxHeight: '85vh', overflow: 'auto', border: '1px solid #2a2a2a' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.75rem' }}>
+                <span style={{ color: '#faff69', fontSize: '.8rem', fontWeight: 600 }}>💻 {file.name}</span>
+                <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>{formatBytes(file.size)}</span>
+              </div>
+              {loading ? (
+                <p style={{ color: '#888888' }}>Loading...</p>
+              ) : (
+                <pre style={{ margin: 0, fontSize: '.8rem', lineHeight: 1.5, color: '#e2e8f0', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: "'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace" }}>{textContent}</pre>
+              )}
+            </div>
+          )}
+
+          {/* Plain text */}
+          {isText && (
+            <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', maxWidth: 700, maxHeight: '85vh', overflow: 'auto', border: '1px solid #2a2a2a' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.75rem' }}>
+                <span style={{ color: '#cccccc', fontSize: '.8rem', fontWeight: 600 }}>📄 {file.name}</span>
+                <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>{formatBytes(file.size)}</span>
+              </div>
+              {loading ? (
+                <p style={{ color: '#888888' }}>Loading...</p>
+              ) : (
+                <pre style={{ margin: 0, fontSize: '.85rem', lineHeight: 1.5, color: '#cccccc', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace' }}>{textContent}</pre>
+              )}
+            </div>
+          )}
+
+          {/* Fallback: unknown type — show download prompt */}
+          {!isVideo && !isAudio && !isImage && !isPdf && !isRenderableText && (
+            <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320, border: '1px solid #2a2a2a' }}>
+              <p style={{ fontSize: '3rem', margin: '0 0 .5rem' }}>📄</p>
+              <p style={{ color: '#ffffff', margin: '0 0 .25rem', fontSize: '1rem' }}>{file.name}</p>
+              <p style={{ color: '#5a5a5a', margin: '0 0 1rem', fontSize: '.85rem' }}>{formatBytes(file.size)}</p>
+              <a href={getDownloadUrl(file.id)} download={file.name} style={{ display: 'inline-block', padding: '.6rem 1.5rem', borderRadius: 8, background: '#faff69', color: '#0a0a0a', fontWeight: 600, textDecoration: 'none', fontSize: '.875rem' }}>⬇ Download</a>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // ─── Share handlers ───
   const handleCopy = async (code: string) => {
@@ -824,7 +1164,7 @@ function Dashboard() {
                   </label>
                   <label style={{ padding: '.5rem .9rem', borderRadius: 6, background: uploading ? '#242424' : '#242424', color: uploading ? '#5a5a5a' : '#faff69', fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', fontSize: '.875rem', whiteSpace: 'nowrap', border: '1px solid #334155' }}>
                     {uploading && uploadingFolderName ? `${uploadProgress}%` : `📁 Folder`}
-                    <input type="file" ref={folderInputRef} onChange={handleFolderUpload} style={{ display: 'none' }} disabled={uploading} multiple webkitdirectory />
+                    <input type="file" ref={folderInputRef} onChange={handleFolderUpload} style={{ display: 'none' }} disabled={uploading} {...{ webkitdirectory: 'true' as any }} />
                   </label>
                   {uploading && (
                     <div style={{ width: 100, height: 4, background: '#242424', borderRadius: 2, overflow: 'hidden' }}>
@@ -904,14 +1244,26 @@ function Dashboard() {
                         <p style={{ margin: '.125rem 0 0', fontSize: '.75rem', color: '#5a5a5a' }}>{formatBytes(f.size)}</p>
                       </div>
                       <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }}>
-                        {(f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp)$/i.test(f.name)) && (
+                        {(f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name)) && (
                           <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🖼 Preview</button>
                         )}
                         {(f.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(f.name)) && (
                           <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.75rem' }}>🎬 Preview</button>
                         )}
+                        {(f.mimeType === 'application/pdf' || /\.pdf$/i.test(f.name)) && (
+                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>📕 Preview</button>
+                        )}
+                        {/\.md$/i.test(f.name) && (
+                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#7dd3fc', cursor: 'pointer', fontSize: '.75rem' }}>📝 Preview</button>
+                        )}
+                        {/\.(js|ts|py|java|go|rs|sh|yaml|yml|json|xml|css|sql|rb|php|toml|txt|log)$/i.test(f.name) && (
+                          <button onClick={() => setPreviewFile(f)} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>💻 Preview</button>
+                        )}
                         {(f.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name)) && (
-                          <button onClick={() => { audioHandlers.play(files.indexOf(f)); }} style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#4ade80', cursor: 'pointer', fontSize: '.75rem' }}>▶ Play</button>
+                          <button onClick={() => { audioHandlers.play(files.indexOf(f)); }}
+                            style={{ padding: '.4rem .6rem', borderRadius: 6, border: 'none', background: audioIndex >= 0 && audioQueue[audioIndex]?.id === f.id ? '#4ade80' : '#242424', color: audioIndex >= 0 && audioQueue[audioIndex]?.id === f.id ? '#0a0a0a' : '#4ade80', cursor: 'pointer', fontSize: '.75rem', fontWeight: audioIndex >= 0 && audioQueue[audioIndex]?.id === f.id ? 600 : 400 }}>
+                            {audioIndex >= 0 && audioQueue[audioIndex]?.id === f.id ? (isPlaying ? '🔊 Playing' : '⏸ Paused') : '▶ Play'}
+                          </button>
                         )}
                         <button onClick={() => handleDownloadSingle(f)} style={{ padding: '.4rem .75rem', borderRadius: 6, border: 'none', background: '#242424', color: '#ffffff', cursor: 'pointer', fontSize: '.75rem' }}>
                           ⬇ Download
@@ -1050,24 +1402,9 @@ function Dashboard() {
       {/* Share per-file modal */}
       {shareFile && <ShareManager file={shareFile} onClose={() => { setShareFile(null); loadShares(); }} onShareCreated={loadShares} />}
 
-      {/* Preview Modal */}
+      {/* Preview Modal — supports images, video, audio, PDF, Markdown, code/text */}
       {previewFile && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setPreviewFile(null)}>
-          <div style={{ maxWidth: '90%', maxHeight: '90%', position: 'relative' }} onClick={e => e.stopPropagation()}>
-            <button onClick={() => setPreviewFile(null)} style={{ position: 'absolute', top: -32, right: 0, background: 'none', border: 'none', color: '#888888', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
-            {previewFile.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(previewFile.name) ? (
-              <video controls autoPlay style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8 }} src={getDlUrl(previewFile.id)} />
-            ) : previewFile.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(previewFile.name) ? (
-              <div style={{ background: '#242424', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320, border: '1px solid #2a2a2a' }}>
-                <p style={{ fontSize: '3rem', margin: '0 0 1rem' }}>🎵</p>
-                <p style={{ color: '#ffffff', margin: '0 0 1.5rem', fontSize: '1rem' }}>{previewFile.name}</p>
-                <audio controls autoPlay style={{ width: '100%' }} src={getDlUrl(previewFile.id)} />
-              </div>
-            ) : (
-              <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={getDlUrl(previewFile.id)} alt={previewFile.name} />
-            )}
-          </div>
-        </div>
+        <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
       )}
 
       {/* Drag & Drop */}
@@ -1115,7 +1452,7 @@ function Dashboard() {
           <audio ref={audioRef} src={audioIndex >= 0 ? getDlUrl(audioQueue[audioIndex].id) : undefined}
             onTimeUpdate={audioHandlers.onTimeUpdate} onLoadedMetadata={audioHandlers.onLoadedMetadata}
             onEnded={audioHandlers.onEnded} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)}
-            />
+            autoPlay />
           <div style={{ minWidth: 0, flex: '0 0 180px', overflow: 'hidden' }}>
             <div style={{ fontSize: '.8rem', color: '#ffffff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {audioIndex >= 0 ? audioQueue[audioIndex].name : ''}

@@ -19,7 +19,7 @@ import {
   renameFolder,
   deleteFolder,
 } from './metadata';
-import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload, transferFileByUrl } from './storage';
+import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload, transferFileByUrl, cleanupUploadChunks, cleanupAllOrphanUploads } from './storage';
 import {
   createShare,
   getShare,
@@ -29,7 +29,7 @@ import {
   updateShare,
   deleteShare,
 } from './shares';
-import { verifyBotConnection, deleteFileMessages } from './bot';
+import { verifyBotConnection, deleteFileMessages, createForumTopic, renameForumTopic, deleteForumTopic } from './bot';
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
 
 // ───── Auto-migrate D1 on cold start ─────
@@ -133,9 +133,14 @@ async function authMiddleware(c: any, next: any) {
   if (!token) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401);
   }
-  if (token !== c.env.DRIVE_AUTH_TOKEN) {
+  // Timing-safe comparison (constant-time, immune to timing attacks)
+  const tokenBytes = new TextEncoder().encode(token);
+  const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
+  if (tokenBytes.length !== expectedBytes.length) {
     return c.json({ error: 'Invalid auth token' }, 403);
   }
+  const equal = await crypto.subtle.timingSafeEqual(tokenBytes, expectedBytes);
+  if (!equal) return c.json({ error: 'Invalid auth token' }, 403);
   await next();
 }
 
@@ -148,6 +153,16 @@ app.get('/assets/*', (c) => {
     return c.body(FRONTEND_JS_CONTENT);
   }
   return c.html(FRONTEND_HTML);
+});
+
+// ───── Auth Verify (public — used by frontend login) ─────
+app.post('/api/auth/verify', async (c) => {
+  const authHeader = c.req.header('Authorization');
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token || token !== c.env.DRIVE_AUTH_TOKEN) {
+    return c.json({ error: 'Invalid token' }, 403);
+  }
+  return c.json({ ok: true });
 });
 
 // ───── Health ─────
@@ -199,22 +214,14 @@ app.post('/api/topics', async (c) => {
   }
 
   // Create in Telegram via Bot API
-  const res = await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/createForumTopic`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: c.env.STORAGE_CHANNEL_ID, name: trimmedName }),
-  });
-  const tgResult: any = await res.json();
-
-  if (!tgResult.ok) {
-    return c.json({ error: `Telegram API error: ${tgResult.description}` }, 500);
+  try {
+    const topicId = await createForumTopic(c.env, trimmedName);
+    // Store in D1
+    const topic = await createTopicMeta(c.env, topicId, trimmedName);
+    return c.json({ ok: true, topic }, 201);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
   }
-
-  const topicId = tgResult.result.message_thread_id;
-
-  // Store in D1
-  const topic = await createTopicMeta(c.env, topicId, trimmedName);
-  return c.json({ ok: true, topic }, 201);
 });
 
 // PUT /api/topics/:topicId — rename a topic
@@ -227,11 +234,12 @@ app.put('/api/topics/:topicId', async (c) => {
   const trimmedName = name.trim();
 
   // Rename in Telegram
-  await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/editForumTopic`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: c.env.STORAGE_CHANNEL_ID, message_thread_id: topicId, name: trimmedName }),
-  });
+  try {
+    await renameForumTopic(c.env, topicId, trimmedName);
+  } catch (err: any) {
+    console.error('Telegram rename error:', err.message);
+    // Continue anyway — D1 rename is the source of truth
+  }
 
   // Rename in D1
   const ok = await renameTopic(c.env, topicId, trimmedName);
@@ -243,11 +251,12 @@ app.delete('/api/topics/:topicId', async (c) => {
   const topicId = Number(c.req.param('topicId'));
 
   // Delete from Telegram
-  await fetch(`https://api.telegram.org/bot${c.env.TG_BOT_TOKEN}/deleteForumTopic`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: c.env.STORAGE_CHANNEL_ID, message_thread_id: topicId }),
-  });
+  try {
+    await deleteForumTopic(c.env, topicId);
+  } catch (err: any) {
+    console.error('Telegram delete topic error:', err.message);
+    // Continue anyway — D1 delete is the source of truth
+  }
 
   // Delete from D1 (cascading files)
   const ok = await deleteTopic(c.env, topicId);
@@ -287,6 +296,25 @@ app.delete('/api/folders/:id', async (c) => {
   const id = Number(c.req.param('id'));
   const ok = await deleteFolder(c.env, id);
   return c.json({ ok });
+});
+
+// GET /api/folders/:id/path — breadcrumb path to folder root
+app.get('/api/folders/:id/path', async (c) => {
+  const id = Number(c.req.param('id'));
+  try {
+    const rows = await c.env.DB.prepare(
+      `WITH RECURSIVE tree AS (
+         SELECT id, parent_id, name, 0 AS depth FROM folders WHERE id = ?
+         UNION ALL
+         SELECT f.id, f.parent_id, f.name, t.depth + 1
+         FROM folders f JOIN tree t ON f.id = t.parent_id
+       )
+       SELECT id, name FROM tree ORDER BY depth DESC`
+    ).bind(id).all<{ id: number; name: string }>();
+    return c.json({ path: rows.results });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 // ───── Files ─────
@@ -354,10 +382,10 @@ app.put('/api/files/:id', async (c) => {
   return c.json({ ok });
 });
 
-// PUT /api/files/:id/move — move file to another topic
+// PUT /api/files/:id/move — move file to another topic/folder
 app.put('/api/files/:id/move', async (c) => {
   const id = Number(c.req.param('id'));
-  const { topicId } = await c.req.json();
+  const { topicId, folderId } = await c.req.json();
   if (!topicId) return c.json({ error: 'topicId is required' }, 400);
   // Verify target topic exists
   const target = await c.env.DB.prepare('SELECT topic_id FROM topics WHERE topic_id = ?').bind(topicId).first();
@@ -368,6 +396,15 @@ app.put('/api/files/:id/move', async (c) => {
     await c.env.DB.prepare('UPDATE files SET folder_id = NULL WHERE id = ?').bind(id).run();
   }
   const ok = await moveFile(c.env, id, topicId);
+  // Apply explicit folder target (works for both same-topic and cross-topic moves)
+  if (folderId !== undefined && folderId !== null) {
+    await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, id).run();
+  } else if (file && file.topic_id !== topicId) {
+    // Cross-topic move without explicit folder — already set to NULL above
+  } else if (folderId === null) {
+    // Explicit request to set folder to null (move to topic root)
+    await c.env.DB.prepare('UPDATE files SET folder_id = NULL WHERE id = ?').bind(id).run();
+  }
   return c.json({ ok });
 });
 
@@ -403,6 +440,14 @@ app.post('/api/files/finalize', async (c) => {
     await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, result.fileId).run();
   }
   return c.json({ ok: true, ...result }, 201);
+});
+
+// ───── Chunked Upload: cleanup chunks on failure ─────
+app.post('/api/files/cleanup-upload', async (c) => {
+  const { uploadId } = await c.req.json();
+  if (!uploadId) return c.json({ error: 'uploadId is required' }, 400);
+  const result = await cleanupUploadChunks(c.env, uploadId);
+  return c.json({ ok: true, ...result });
 });
 
 // ───── URL Transfer: download from URL and store ─────
@@ -478,6 +523,16 @@ app.put('/api/shares/:code', async (c) => {
   const result = await updateShare(c.env, code, payload);
   if (!result.ok) return c.json(result, 404);
   return c.json(result);
+});
+
+// ───── Admin: Clean all orphan upload chunks ─────
+app.post('/api/admin/cleanup-orphans', async (c) => {
+  try {
+    const result = await cleanupAllOrphanUploads(c.env);
+    return c.json({ ok: true, ...result });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 // ───── Admin: Debug migration ─────
@@ -593,9 +648,9 @@ app.get('/dl/:code', async (c) => {
   }
   const share = shareInfo.share!;
   if (share.hasPassword) {
-    return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Download — ${share.fileName}</title><style>*{box-sizing:border-box;margin:0}body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem}.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:420px}h1{color:#38bdf8;font-size:1.25rem;margin-bottom:.25rem}.meta{color:#94a3b8;font-size:.875rem;margin-bottom:1.5rem}label{display:block;color:#94a3b8;font-size:.875rem;margin-bottom:.5rem}input[type=password]{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:1rem;outline:none}input[type=password]:focus{border-color:#38bdf8}button{width:100%;margin-top:1rem;padding:.75rem;border-radius:8px;border:none;background:#38bdf8;color:#0f172a;font-size:1rem;font-weight:600;cursor:pointer}button:hover{background:#7dd3fc}.error{color:#f87171;font-size:.875rem;margin-top:.5rem;display:none}</style></head><body><div class="card"><h1>📁 ${share.fileName}</h1><div class="meta">${formatBytes(share.fileSize)}</div><label for="pwd">This file is password protected</label><input type="password" id="pwd" placeholder="Enter password" autocomplete="off"><div class="error" id="error"></div><button onclick="download()">Download</button></div><script>async function download(){const pwd=document.getElementById('pwd').value;const err=document.getElementById('error');err.style.display='none';try{const res=await fetch('/api/shares/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${code}',password:pwd})});const data=await res.json();if(data.ok&&data.downloadUrl){window.location.href=data.downloadUrl}else if(data.ok){window.location.href='/dl/${code}/raw'}else{err.textContent=data.error||'Invalid password';err.style.display='block'}}catch(e){err.textContent='Network error';err.style.display='block'}}</script></body></html>`);
+    return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: true }));
   }
-  return c.redirect(`/dl/${code}/raw`);
+  return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: false }));
 });
 
 app.get('/dl/:code/raw', async (c) => {
@@ -627,4 +682,121 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Generate the share download page HTML — in-page download with progress bar.
+ * Uses fetch + ReadableStream to download via Worker, shows real-time progress,
+ * then triggers browser save-as via blob URL when complete.
+ */
+function sharePageHTML(p: { code: string; fileName: string; fileSize: number; requiresPassword: boolean }): string {
+  const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const name = esc(p.fileName);
+  const size = formatBytes(p.fileSize);
+  const rawUrl = `/dl/${p.code}/raw`;
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Download — ${name}</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem}
+.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:440px;text-align:center}
+h1{color:#38bdf8;font-size:1.2rem;margin-bottom:0;word-break:break-all}
+.meta{color:#94a3b8;font-size:.85rem;margin:.35rem 0 1.5rem}
+label{display:block;color:#94a3b8;font-size:.85rem;margin-bottom:.5rem;text-align:left}
+input[type=password]{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:1rem;outline:none}
+input[type=password]:focus{border-color:#38bdf8}
+.btn{width:100%;margin-top:.75rem;padding:.75rem;border-radius:8px;border:none;font-size:1rem;font-weight:600;cursor:pointer;transition:.15s}
+.btn-primary{background:#38bdf8;color:#0f172a}
+.btn-primary:hover{background:#7dd3fc}
+.btn-primary:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.error{color:#f87171;font-size:.85rem;margin-top:.5rem;display:none}
+#progress-wrap{display:none;margin-top:1rem}
+progress{width:100%;height:8px;border-radius:4px;overflow:hidden;appearance:none;-webkit-appearance:none}
+progress::-webkit-progress-bar{background:#334155;border-radius:4px}
+progress::-webkit-progress-value{background:#38bdf8;border-radius:4px}
+progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
+#progress-text{color:#94a3b8;font-size:.8rem;margin-top:.35rem}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📁 ${name}</h1>
+  <div class="meta">${size}</div>
+  ${p.requiresPassword ? `
+  <div id="pw-wrap">
+    <label for="pwd">文件受密码保护</label>
+    <input type="password" id="pwd" placeholder="输入密码" autocomplete="off">
+    <div class="error" id="error"></div>
+    <button class="btn btn-primary" id="dl-btn" onclick="startDownload()">下载</button>
+  </div>` : `
+  <button class="btn btn-primary" id="dl-btn" onclick="startDownload()">下载</button>`}
+  <div id="progress-wrap">
+    <progress id="progress-bar" value="0" max="100"></progress>
+    <div id="progress-text">准备下载...</div>
+  </div>
+</div>
+<script>
+${p.requiresPassword ? `
+async function startDownload(){
+  const btn=document.getElementById('dl-btn');
+  const err=document.getElementById('error');
+  const pwd=document.getElementById('pwd').value;
+  err.style.display='none';
+  btn.disabled=true;btn.textContent='验证中...';
+  try{
+    const res=await fetch('/api/shares/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:pwd})});
+    const data=await res.json();
+    if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='下载';return}
+  }catch(e){
+    err.textContent='网络错误，请重试';err.style.display='block';btn.disabled=false;btn.textContent='下载';return
+  }
+  doDownload();
+}` : `
+async function startDownload(){
+  document.getElementById('dl-btn').disabled=true;
+  document.getElementById('dl-btn').textContent='下载中...';
+  doDownload();
+}`}
+async function doDownload(){
+  const wrap=document.getElementById('progress-wrap');
+  const bar=document.getElementById('progress-bar');
+  const txt=document.getElementById('progress-text');
+  wrap.style.display='block';
+  try{
+    const res=await fetch('${rawUrl}');
+    if(!res.ok){const e=await res.json().catch(()=>({error:'HTTP '+res.status}));txt.textContent='下载失败: '+(e.error||res.status);return}
+    const cl=parseInt(res.headers.get('X-Total-Size')||res.headers.get('Content-Length')||'0',10);
+    const reader=res.body.getReader();
+    const chunks=[];
+    let received=0;
+    while(true){
+      const{done,value}=await reader.read();
+      if(done)break;
+      chunks.push(value);
+      received+=value.length;
+      if(cl>0){const pct=Math.round(received/cl*100);bar.value=pct;txt.textContent=pct+'% ('+fmt(received)+'/'+fmt(cl)+')'}
+      else{txt.textContent='下载中... '+fmt(received)}
+    }
+    bar.value=100;
+    txt.textContent='下载完成，保存文件中...';
+    const blob=new Blob(chunks);
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download='${name}';document.body.appendChild(a);a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    txt.textContent='✅ 下载完成';
+  }catch(e){
+    txt.textContent='下载失败: '+e.message;
+  }
+}
+function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
+</script>
+</body>
+</html>`;
 }

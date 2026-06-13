@@ -24,8 +24,9 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
 export async function login(token: string): Promise<boolean> {
   try {
-    const r = await fetch(`${API_BASE}/api/stats`, { headers: { Authorization: `Bearer ${token}` } });
-    if (r.ok) { localStorage.setItem('tgcd_auth_token', token); return true; }
+    const r = await fetch(`${API_BASE}/api/auth/verify`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json();
+    if (data.ok) { localStorage.setItem('tgcd_auth_token', token); return true; }
     return false;
   } catch { return false; }
 }
@@ -82,48 +83,64 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
   const uploadId = crypto.randomUUID();
 
   async function run() {
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const chunk = file.slice(start, end);
-      const fd = new FormData();
-      fd.append('file', chunk, `chunk_${i}`);
-      fd.append('uploadId', uploadId);
-      fd.append('chunkIndex', String(i));
-      fd.append('totalChunks', String(totalChunks));
-      fd.append('topicId', String(topicId));
-      fd.append('fileName', file.name);
-      fd.append('fileSize', String(file.size));
-      fd.append('mimeType', file.type);
-      if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        const fd = new FormData();
+        fd.append('file', chunk, `chunk_${i}`);
+        fd.append('uploadId', uploadId);
+        fd.append('chunkIndex', String(i));
+        fd.append('totalChunks', String(totalChunks));
+        fd.append('topicId', String(topicId));
+        fd.append('fileName', file.name);
+        fd.append('fileSize', String(file.size));
+        fd.append('mimeType', file.type);
+        if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
 
-      await new Promise<void>((resolveChunk, rejectChunk) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${API_BASE}/api/files/upload-chunk`);
-        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && onProgress) {
-            const chunkPct = e.loaded / e.total;
-            const overall = Math.round(((i + chunkPct) / totalChunks) * 100);
-            onProgress(overall);
-          }
-        };
-        xhr.onload = () => {
-          try {
-            const data = JSON.parse(xhr.responseText);
-            if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolveChunk();
-            else rejectChunk(new Error(data.error || `HTTP ${xhr.status}`));
-          } catch { rejectChunk(new Error('Invalid response')); }
-        };
-        xhr.onerror = () => rejectChunk(new Error('Network error'));
-        xhr.send(fd);
+        await new Promise<void>((resolveChunk, rejectChunk) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `${API_BASE}/api/files/upload-chunk`);
+          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable && onProgress) {
+              const chunkPct = e.loaded / e.total;
+              const overall = Math.round(((i + chunkPct) / totalChunks) * 100);
+              onProgress(overall);
+            }
+          };
+          xhr.onload = () => {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolveChunk();
+              else rejectChunk(new Error(data.error || `HTTP ${xhr.status}`));
+            } catch { rejectChunk(new Error('Invalid response')); }
+          };
+          xhr.onerror = () => rejectChunk(new Error('Network error'));
+          xhr.send(fd);
+        });
+        // Pace chunks: 1.5s gap keeps us well under 20/min Bot API limit
+        if (i < totalChunks - 1) {
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      // Finalize
+      return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
+        method: 'POST',
+        body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks, folderId }),
       });
+    } catch (err) {
+      // Upload failed — clean up orphaned chunks from Telegram
+      try {
+        await fetch(`${API_BASE}/api/files/cleanup-upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ uploadId }),
+        });
+      } catch { /* cleanup is best-effort */ }
+      throw err;
     }
-    // Finalize
-    return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
-      method: 'POST',
-      body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks, folderId }),
-    });
   }
 
   return run();
@@ -133,7 +150,9 @@ export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/a
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 
 export const getDlUrl = (id: number) => {
-  return `/api/files/${id}/download`; // No token in URL for security
+  const token = getToken();
+  const qs = token ? `?token=${token}` : '';
+  return `/api/files/${id}/download${qs}`;
 };
 export const getDownloadUrl = (id: number) => {
   return `/api/files/${id}/download?dl=1`;
@@ -177,7 +196,7 @@ export async function downloadFile(
     throw new Error(body.error || `HTTP ${res.status}`);
   }
 
-  const contentLength = parseInt(res.headers.get('Content-Length') || '0', 10);
+  const contentLength = parseInt(res.headers.get('X-Total-Size') || res.headers.get('Content-Length') || '0', 10);
   const reader = res.body!.getReader();
   const chunks: BlobPart[] = [];
   let received = 0;

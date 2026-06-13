@@ -19,7 +19,10 @@ export function apiIndex(reqUrl: URL) {
       { method: 'GET',    path: '/api/openapi.json',  description: 'Full OpenAPI 3.0 specification' },
       { method: 'GET',    path: '/api/health',        description: 'Service health check' },
       { method: 'GET',    path: '/api/stats',         description: 'Aggregate storage stats' },
+      { method: 'POST',   path: '/api/auth/verify',   description: 'Verify auth token [PUBLIC — no auth]' },
       { method: 'POST',   path: '/api/shares/verify', description: 'Verify share password and get download URL [PUBLIC — no auth]' },
+      { method: 'GET',    path: '/dl/:code',          description: 'Share download page [PUBLIC]' },
+      { method: 'GET',    path: '/dl/:code/raw',      description: 'Share raw download [PUBLIC]' },
 
       // ── Topics (auth required) ──
       { method: 'GET',    path: '/api/topics',          description: 'List all topics' },
@@ -32,7 +35,9 @@ export function apiIndex(reqUrl: URL) {
       { method: 'POST',   path: '/api/files/upload',         description: 'Upload a file (multipart/form-data or JSON)' },
       { method: 'POST',   path: '/api/files/upload-chunk',   description: 'Upload a single chunk (chunked upload)' },
       { method: 'POST',   path: '/api/files/finalize',       description: 'Finalize chunked upload' },
+      { method: 'POST',   path: '/api/files/cleanup-upload', description: 'Cleanup orphaned upload chunks' },
       { method: 'PUT',    path: '/api/files/:id',            description: 'Rename a file' },
+      { method: 'PUT',    path: '/api/files/:id/move',       description: 'Move file to another topic/folder' },
       { method: 'DELETE', path: '/api/files/:id',            description: 'Delete a file and its Telegram messages' },
       { method: 'GET',    path: '/api/files/:id/download',   description: 'Download a file stream' },
       { method: 'POST',   path: '/api/transfer',             description: 'Transfer a file from an external URL' },
@@ -56,6 +61,7 @@ export function apiIndex(reqUrl: URL) {
       { method: 'POST',   path: '/api/admin/sync-topics',   description: 'Discover Telegram forum topics' },
       { method: 'GET',    path: '/api/admin/info',          description: 'Get Telegram channel info' },
       { method: 'GET',    path: '/api/admin/identify/:topicId', description: 'Send ID card to a topic' },
+      { method: 'POST',   path: '/api/admin/cleanup-orphans',   description: 'Clean all orphan upload chunks' },
     ],
   };
 }
@@ -127,7 +133,6 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           summary: 'Aggregate stats',
           description: 'Returns total file count, total size, and topic count.',
           tags: ['Public'],
-          security: [{ BearerAuth: [] }],
           responses: {
             '200': {
               description: 'Storage statistics',
@@ -144,6 +149,30 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
                 },
               },
             },
+          },
+        },
+      },
+      '/api/auth/verify': {
+        post: {
+          summary: 'Verify auth token',
+          description: 'Public endpoint — no auth required. Verify that a Bearer token is valid.',
+          tags: ['Public'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    token: { type: 'string', description: 'Auth token (passed via Authorization header)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Token valid' },
+            '403': { description: 'Invalid token' },
           },
         },
       },
@@ -396,6 +425,29 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           responses: { '201': { description: 'File created' } },
         },
       },
+      '/api/files/cleanup-upload': {
+        post: {
+          summary: 'Cleanup failed upload chunks',
+          description: 'Clean up Telegram messages and KV entries for an abandoned chunked upload.',
+          tags: ['Files'],
+          security: [{ BearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['uploadId'],
+                  properties: {
+                    uploadId: { type: 'string', description: 'Upload ID from chunked upload' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Cleanup result' } },
+        },
+      },
       '/api/files/{id}': {
         put: {
           summary: 'Rename file',
@@ -427,6 +479,33 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
             { name: 'id', in: 'path', required: true, schema: { type: 'number' } },
           ],
           responses: { '200': { description: 'Delete result' } },
+        },
+      },
+      '/api/files/{id}/move': {
+        put: {
+          summary: 'Move file',
+          description: 'Move file to another topic or folder.',
+          tags: ['Files'],
+          security: [{ BearerAuth: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'number' } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['topicId'],
+                  properties: {
+                    topicId: { type: 'number', description: 'Target topic ID' },
+                    folderId: { type: 'number', nullable: true, description: 'Target folder ID (null = topic root)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Move result' } },
         },
       },
       '/api/files/{id}/download': {
@@ -718,6 +797,15 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           responses: { '200': { description: 'Identify result' } },
         },
       },
+      '/api/admin/cleanup-orphans': {
+        post: {
+          summary: 'Clean orphan upload chunks',
+          description: 'List all orphaned chunked upload KV entries and delete their Telegram messages.',
+          tags: ['Admin'],
+          security: [{ BearerAuth: [] }],
+          responses: { '200': { description: 'Cleanup result' } },
+        },
+      },
 
       // ── Public Share Download (no auth) ──
       '/dl/{code}': {
@@ -788,7 +876,6 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
             fileName: { type: 'string' },
             fileSize: { type: 'number' },
             hasPassword: { type: 'boolean' },
-            password: { type: 'string', nullable: true },
             expiresAt: { type: 'number', nullable: true },
             downloadCount: { type: 'number' },
             createdAt: { type: 'number' },
@@ -801,6 +888,7 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
       { name: 'Public', description: 'Public endpoints (no auth required)' },
       { name: 'Topics', description: 'Folder/topic management' },
       { name: 'Files', description: 'File CRUD and transfer operations' },
+      { name: 'Folders', description: 'Hierarchical folder management' },
       { name: 'Shares', description: 'Share link management' },
       { name: 'Admin', description: 'Administrative operations' },
     ],

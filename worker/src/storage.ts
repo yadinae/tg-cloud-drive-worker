@@ -1,5 +1,5 @@
 import type { Env, ChunkInfo, UploadProgress } from './types';
-import { sendDocumentToChannel, streamFileFromTelegram, getTelegramFilePath } from './bot';
+import { sendDocumentToChannel, streamFileFromTelegram, getTelegramFilePath, deleteTelegramMessage } from './bot';
 import { createFile, updateFileManifest, getFile } from './metadata';
 
 // ───── Constants ─────
@@ -54,6 +54,11 @@ export async function uploadCompleteFile(
         await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempts)));
       }
     }
+
+    // Pace chunks: avoid hitting 20/min Bot API rate limit
+    if (i < totalChunks - 1) {
+      await new Promise(r => setTimeout(r, 1500));
+    }
   }
 
   emitProgress('finalizing', totalChunks, totalSize);
@@ -97,28 +102,25 @@ export async function downloadFileStream(
   }
 
   const manifest: ChunkInfo[] = JSON.parse(fileRecord.manifest);
-  const disposition = forceDownload || !fileRecord.mime_type.startsWith('image/')
-    ? `attachment; filename="${fileRecord.name}"`
-    : 'inline';
-
   // ─── Single chunk: proxy through Worker — always proxy for reliability (no CDN CORS issues) ───
   if (manifest.length === 1) {
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
-        const isMedia = fileRecord.mime_type.startsWith('video/') || fileRecord.mime_type.startsWith('audio/') || fileRecord.mime_type.startsWith('image/');
-        return new Response(res.body, {
-          status: res.status,
-          headers: new Headers({
-            'Content-Type': fileRecord.mime_type,
-            'Content-Disposition': disposition,
-            'Content-Length': res.headers.get('Content-Length') || String(fileRecord.size),
-            'Accept-Ranges': 'bytes',
-            ...(range && res.headers.get('Content-Range')
-              ? { 'Content-Range': res.headers.get('Content-Range')! } : {}),
-          }),
+        const singleHeaders = new Headers({
+          'Content-Type': fileRecord.mime_type,
+          'Content-Disposition': 'inline',
+          'X-Total-Size': String(fileRecord.size),
+          'Accept-Ranges': 'bytes',
         });
+        // Passthrough Content-Length from Telegram (passthrough body, no buffering)
+        const tgCL = res.headers.get('Content-Length');
+        if (tgCL) singleHeaders.set('Content-Length', tgCL);
+        if (range && res.headers.get('Content-Range')) {
+          singleHeaders.set('Content-Range', res.headers.get('Content-Range')!);
+        }
+        return new Response(res.body, { status: res.status, headers: singleHeaders });
       } catch (err: any) {
         lastErr = err;
         if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
@@ -184,23 +186,26 @@ export async function downloadFileStream(
         }
       }
 
+      // Shared error flag: any chunk failure aborts the entire stream
+      let streamError: Error | null = null;
+
       // Fire-and-forget fetchers
       function startFetch(idx: number) {
         inFlight++;
         fetchAndBuffer(idx).catch(err => {
-          console.error(err.message);
-          buffer[idx] = new TextEncoder().encode(JSON.stringify({ error: err.message }));
+          streamError = err;
+          console.error(`Chunk ${idx} download failed:`, err.message);
         }).finally(() => { inFlight--; });
       }
 
       // Main loop: keep filling up to MAX_PARALLEL, write when ordered
-      while (nextIdx < manifest.length) {
+      while (nextIdx < manifest.length && !streamError) {
         // Launch new fetches
         while (inFlight < MAX_PARALLEL && nextFetchIdx < manifest.length) {
           startFetch(nextFetchIdx++);
         }
         // If the next chunk is ready, write it (and any subsequent ready chunks)
-        while (nextIdx < manifest.length && buffer[nextIdx] !== null) {
+        while (nextIdx < manifest.length && buffer[nextIdx] !== null && !streamError) {
           await writer.write(buffer[nextIdx]!);
           buffer[nextIdx] = null;
           nextIdx++;
@@ -210,8 +215,15 @@ export async function downloadFileStream(
         // Small yield to event loop
         await new Promise(r => setTimeout(r, 5));
       }
+
+      if (streamError) {
+        throw streamError;
+      }
     } catch (err: any) {
       console.error('Multi-chunk stream error:', err.message);
+      // Abort the writer so the client gets an error response, not corrupted content
+      try { await writer.abort(err.message); } catch { /* writer may already be closed */ }
+      return;
     }
     await writer.close();
   })();
@@ -220,7 +232,8 @@ export async function downloadFileStream(
     status: 200,
     headers: {
       'Content-Type': fileRecord.mime_type,
-      'Content-Disposition': disposition,
+      'Content-Disposition': 'inline',
+      'X-Total-Size': String(fileRecord.size),
       'Accept-Ranges': 'bytes',
     },
   });
@@ -398,4 +411,78 @@ export async function transferFileByUrl(
   }
 
   return { fileId: result.fileId, fileName, size: buffer.byteLength };
+}
+
+/**
+ * Clean up all chunks associated with a failed (or abandoned) chunked upload.
+ * Deletes Telegram messages for each chunk and removes KV entries.
+ * Returns the number of chunks successfully cleaned up.
+ */
+export async function cleanupUploadChunks(env: Env, uploadId: string): Promise<{ deleted: number; failed: number; found: number }> {
+  let deleted = 0, failed = 0, found = 0;
+  try {
+    // List all KV entries with this uploadId prefix
+    let cursor: string | undefined;
+    do {
+      const list = await env.SHARES.list({ prefix: `${UPLOAD_PREFIX}${uploadId}:`, cursor });
+      for (const key of list.keys) {
+        found++;
+        try {
+          const raw = await env.SHARES.get(key.name);
+          if (raw) {
+            const info = JSON.parse(raw);
+            if (info.message_id) {
+              const ok = await deleteTelegramMessage(env, info.message_id);
+              if (ok) deleted++; else failed++;
+            }
+          }
+          await env.SHARES.delete(key.name);
+        } catch (err) {
+          console.error(`Cleanup error for key ${key.name}:`, err);
+          failed++;
+        }
+      }
+      cursor = (list as any).cursor;
+    } while (cursor);
+
+    // Also clean up the meta key if it exists
+    await env.SHARES.delete(`${UPLOAD_PREFIX}${uploadId}:meta`).catch(() => {});
+  } catch (err) {
+    console.error('cleanupUploadChunks error:', err);
+  }
+  return { deleted, failed, found };
+}
+
+/**
+ * Clean up ALL orphan upload chunks in the KV namespace.
+ * Lists all KV keys with the upload prefix, groups by uploadId,
+ * and calls cleanupUploadChunks for each unique uploadId.
+ * Returns the total counts across all cleaned uploads.
+ */
+export async function cleanupAllOrphanUploads(env: Env): Promise<{ totalDeleted: number; totalFailed: number; totalFound: number; uploadIds: string[] }> {
+  let totalDeleted = 0, totalFailed = 0, totalFound = 0;
+  const uploadIds = new Set<string>();
+  const keysToProcess: string[] = [];
+
+  // Collect all up: keys
+  let cursor: string | undefined;
+  do {
+    const list = await env.SHARES.list({ prefix: `${UPLOAD_PREFIX}`, cursor });
+    for (const key of list.keys) {
+      keysToProcess.push(key.name);
+      // Extract uploadId from key name: "up:{uploadId}:{index}"
+      const match = key.name.match(/^up:([^:]+):/);
+      if (match) uploadIds.add(match[1]);
+    }
+    cursor = (list as any).cursor;
+  } while (cursor);
+
+  for (const uploadId of uploadIds) {
+    const result = await cleanupUploadChunks(env, uploadId);
+    totalDeleted += result.deleted;
+    totalFailed += result.failed;
+    totalFound += result.found;
+  }
+
+  return { totalDeleted, totalFailed, totalFound, uploadIds: Array.from(uploadIds) };
 }
