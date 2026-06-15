@@ -438,19 +438,36 @@ function Dashboard() {
   const [moveTargetFolder, setMoveTargetFolder] = useState<number | null>(null);
   const [moveTargetFolders, setMoveTargetFolders] = useState<Folder[]>([]);
   const [moveTopicId, setMoveTopicId] = useState<number | null>(null);
+  const [moveTopics, setMoveTopics] = useState<Topic[]>([]);
 
   const handleOpenMove = async (f: DriveFile) => {
     setMoveFile(f);
     setMoveTopicId(f.topicId);
     setMoveTargetFolder(f.folderId);
     setMoveTargetFolders([]);
+    setMoveTopics([]);
     try {
+      // Load all topics for cross-topic move
+      const t = await fetchTopics();
+      setMoveTopics(t.topics || []);
+      // Load current topic's folders
       const r = await fetchFolders(f.topicId);
-      // Filter out the current file's folder from choices
       const allFolders = (r.folders || []).filter((folder: Folder) => folder.id !== f.folderId);
       setMoveTargetFolders(allFolders);
     } catch (err: any) {
-      alert('Failed to load folders: ' + (err.message || 'unknown error'));
+      alert('Failed to load topics/folders: ' + (err.message || 'unknown error'));
+      setMoveTargetFolders([]);
+    }
+  };
+
+  const handleChangeMoveTopic = async (topicId: number) => {
+    setMoveTopicId(topicId);
+    setMoveTargetFolder(null); // Reset folder when topic changes
+    setMoveTargetFolders([]);
+    try {
+      const r = await fetchFolders(topicId);
+      setMoveTargetFolders(r.folders || []);
+    } catch {
       setMoveTargetFolders([]);
     }
   };
@@ -466,6 +483,7 @@ function Dashboard() {
       if (!res.ok) throw new Error((await res.json()).error || 'Move failed');
       setMoveFile(null);
       if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
+      await loadTopics();
     } catch (err: any) {
       alert('Move failed: ' + err.message);
     }
@@ -632,44 +650,44 @@ function Dashboard() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation();
     setDragging(false); dragCounter.current = 0;
+
+    // ★ 同步提取文件列表 — 必须在任何 await 之前完成，否则 dataTransfer 会被浏览器清空
     const dt = e.dataTransfer;
     if (!dt) return;
+    const fileList = dt.files;
+    const items = dt.items;
 
-    // Fallback: if items not available but files are, go directly
-    if (!dt.items || dt.items.length === 0) {
-      if (dt.files && dt.files.length > 0) {
-        handleDropFiles(dt.files);
+    // 简单场景：直接取 files（非文件夹拖放）
+    if (!items || items.length === 0 || !Array.from(items).some(i => (i as any).webkitGetAsEntry?.()?.isDirectory)) {
+      if (fileList && fileList.length > 0 && currentTopic) {
+        await handleDropFiles(fileList);
       }
       return;
     }
 
-    // Check if any item is a directory using webkitGetAsEntry
+    // 文件夹场景：使用 webkitGetAsEntry 遍历（有 await，但 files 已在上面同步保存到 fileList）
     let hasDir = false;
     const allItems: Array<{ file: File; relPath: string }> = [];
-    for (let i = 0; i < dt.items.length; i++) {
-      const entry = (dt.items[i] as any).webkitGetAsEntry?.();
+    for (let i = 0; i < items.length; i++) {
+      const entry = (items[i] as any).webkitGetAsEntry?.();
       if (!entry) {
-        // Fallback for items that don't support webkitGetAsEntry (e.g., plain text)
-        // Collect as regular file if available
-        if (dt.files[i]) allItems.push({ file: dt.files[i], relPath: '' });
+        if (fileList[i]) allItems.push({ file: fileList[i], relPath: '' });
         continue;
       }
       if (entry.isDirectory) {
-        // Directory → traverse recursively
         const results = await traverseEntry(entry, '');
         for (const r of results) {
           hasDir = true;
           allItems.push(r);
         }
       } else {
-        // Regular file → collect directly with empty relPath
         const f = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
         allItems.push({ file: f, relPath: '' });
       }
     }
 
     if (hasDir && allItems.length > 0 && currentTopic) {
-      // Folder drop — use folder upload logic
+      // Folder drop
       setUploading(true); setUploadProgress(0);
       const rootName = allItems[0].relPath.split('/')[0] || 'folder';
       setUploadingFolderName(rootName);
@@ -682,7 +700,6 @@ function Dashboard() {
           dirMap.get(dirPath)!.push({ file, relPath });
         }
         const sortedDirs = Array.from(dirMap.entries()).sort((a, b) => a[0].split('/').length - b[0].split('/').length);
-        // Cache all folders to avoid N×M API calls
         let folderCache: Folder[] = [];
         try { const r = await fetchFolders(currentTopic.topicId); folderCache = r.folders || []; } catch {}
         const resolveFolderId = (leafName: string, parentId: number | null): number | null => {
@@ -716,11 +733,8 @@ function Dashboard() {
         await loadFiles(currentTopic.topicId, currentFolder);
         await loadFolders(currentTopic.topicId, currentFolder);
         await loadTopics();
-      } catch (err: any) { alert('Upload failed: ' + (err.message || 'Network error')); }
+      } catch (err: any) { alert('Folder drop failed: ' + (err.message || 'Network error')); }
       setUploading(false); setUploadProgress(0); setUploadingFolderName('');
-    } else if (dt.files && dt.files.length > 0) {
-      // Regular file drop
-      handleDropFiles(dt.files);
     }
   };
 
@@ -897,7 +911,7 @@ function Dashboard() {
     }
 
     return (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
         <div style={{ maxWidth: '95%', maxHeight: '92%', minWidth: 320, position: 'relative' }} onClick={e => e.stopPropagation()}>
           <button onClick={onClose} style={{ position: 'absolute', top: -36, right: 0, background: 'rgba(0,0,0,.5)', border: 'none', color: '#cccccc', fontSize: '1.5rem', cursor: 'pointer', padding: '.25rem .5rem', borderRadius: 6, lineHeight: 1, zIndex: 1 }}>✕</button>
 
@@ -1077,7 +1091,12 @@ function Dashboard() {
   const acCol = (cat: string) => activeCategory === cat ? '#ffffff' : '#888888';
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
+    <div style={{ 
+      minHeight: '100vh', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font,
+      position: 'relative',
+      outline: dragging && currentTopic ? '3px dashed #faff69' : 'none',
+      outlineOffset: '-3px',
+    }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}>
       {/* Header */}
       <header style={{ borderBottom: '1px solid #1e293b', padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
@@ -1402,19 +1421,9 @@ function Dashboard() {
       {/* Share per-file modal */}
       {shareFile && <ShareManager file={shareFile} onClose={() => { setShareFile(null); loadShares(); }} onShareCreated={loadShares} />}
 
-      {/* Preview Modal — supports images, video, audio, PDF, Markdown, code/text */}
+      {/* Preview Modal */}
       {previewFile && (
         <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
-      )}
-
-      {/* Drag & Drop */}
-      {dragging && currentTopic && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 999, background: 'rgba(250, 255, 105, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', border: '3px dashed #faff69' }}>
-          <div style={{ textAlign: 'center' }}>
-            <p style={{ fontSize: '4rem', margin: '0 0 .5rem' }}>📁</p>
-            <p style={{ color: '#faff69', fontSize: '1.5rem', fontWeight: 600 }}>Drop files here to upload</p>
-          </div>
-        </div>
       )}
 
       {/* Download Progress */}
@@ -1491,15 +1500,28 @@ function Dashboard() {
             <p style={{ fontSize: '.875rem', color: '#888888', marginBottom: '1rem' }}>
               <strong style={{ color: '#ffffff' }}>{moveFile.name}</strong>
             </p>
+            {/* Topic selector */}
+            <div style={{ marginBottom: '.75rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Target topic:</label>
+              <div style={{ maxHeight: 140, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+                {moveTopics.map(t => (
+                  <button key={t.topicId} onClick={() => handleChangeMoveTopic(t.topicId)}
+                    style={{ textAlign: 'left', width: '100%', padding: '.5rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTopicId === t.topicId ? '#2a2a2a' : '#242424', color: moveTopicId === t.topicId ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.85rem' }}>
+                    {moveFile && moveTopicId === t.topicId ? '📍 ' : '📁 '}{t.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Folder selector (within selected topic) */}
             <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Select target folder:</label>
-              <div style={{ maxHeight: 240, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+              <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Target folder (optional):</label>
+              <div style={{ maxHeight: 160, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
                 <button onClick={() => setMoveTargetFolder(null)}
                   style={{ textAlign: 'left', width: '100%', padding: '.6rem .75rem', borderRadius: 6, border: '1px solid #2a2a2a', background: moveTargetFolder === null ? '#2a2a2a' : '#242424', color: moveTargetFolder === null ? '#faff69' : '#cccccc', cursor: 'pointer', fontSize: '.875rem' }}>
                   📂 Topic root (no folder)
                 </button>
                 {moveTargetFolders.length === 0 && (
-                  <p style={{ color: '#5a5a5a', fontSize: '.8rem', textAlign: 'center', padding: '1rem 0' }}>No sub-folders — create one first</p>
+                  <p style={{ color: '#5a5a5a', fontSize: '.8rem', textAlign: 'center', padding: '.5rem 0' }}>No sub-folders in this topic</p>
                 )}
                 {moveTargetFolders.map(f => (
                   <button key={f.id} onClick={() => setMoveTargetFolder(f.id)}
