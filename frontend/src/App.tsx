@@ -765,9 +765,16 @@ function Dashboard() {
   const handleConfirmMove = async () => {
     if (!moveFile || moveTopicId === null) return;
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const sessionId = localStorage.getItem('tgcd_session_id');
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+      else {
+        const token = localStorage.getItem('tgcd_auth_token');
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+      }
       const res = await fetch('/api/files/' + moveFile.id + '/move', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('tgcd_auth_token') },
+        headers,
         body: JSON.stringify({ topicId: moveTopicId, folderId: moveTargetFolder }),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Move failed');
