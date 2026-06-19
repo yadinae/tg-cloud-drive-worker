@@ -264,3 +264,16 @@ export const deleteFolderApi = (id: number, topicId: number) =>
   req<{ ok: boolean }>(`/api/folders/${id}?topicId=${topicId}`, { method: 'DELETE' });
 export const fetchFolderPath = (id: number) =>
   req<{ path: { id: number; name: string }[] }>(`/api/folders/${id}/path`);
+
+// ───── Folder Shares ─────
+export const createFolderShare = (p: { topicId: number; folderId?: number | null; password?: string; expiresIn?: number }) =>
+  req<{ ok: boolean; code: string; url: string }>('/api/shares/folder', { method: 'POST', body: JSON.stringify(p) });
+
+export const fetchAllFolderShares = () =>
+  req<{ shares: any[] }>('/api/shares/folder/list-all');
+
+export const deleteFolderShare = (code: string) =>
+  req<{ ok: boolean }>(`/api/shares/folder/${code}`, { method: 'DELETE' });
+
+export const updateFolderShare = (code: string, p: { password?: string; expiresIn?: number }) =>
+  req<{ ok: boolean }>(`/api/shares/folder/${code}`, { method: 'PUT', body: JSON.stringify(p) });

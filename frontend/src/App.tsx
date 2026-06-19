@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath, createFolderShare, fetchAllFolderShares, deleteFolderShare, updateFolderShare } from './api/client';
 import { c, s, st } from './design-tokens';
 
 type View = 'login' | 'drive';
@@ -172,6 +172,161 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
   );
 }
 
+// ─── Folder Share Modal (share an entire folder/topic) ───
+function FolderShareModal({ target, onClose, onShareCreated }: {
+  target: { topicId: number; folderId: number | null; name: string };
+  onClose: () => void;
+  onShareCreated?: () => void;
+}) {
+  const [password, setPassword] = useState('');
+  const [expiresIn, setExpiresIn] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [result, setResult] = useState<{ code: string; url: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [shares, setShares] = useState<any[]>([]);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [passwordLength, setPasswordLength] = useState(4);
+
+  const generatePassword = (len: number) => {
+    let pwd = '';
+    for (let i = 0; i < len; i++) pwd += Math.floor(Math.random() * 10).toString();
+    setPassword(pwd);
+  };
+
+  const loadFolderShares = useCallback(async () => {
+    try {
+      const r = await fetchAllFolderShares();
+      const folderShares = (r.shares || []).filter((s: any) =>
+        s.topicId === target.topicId && s.folderId === target.folderId
+      );
+      setShares(folderShares);
+    } catch { setShares([]); }
+  }, [target.topicId, target.folderId]);
+
+  useEffect(() => { loadFolderShares(); }, [loadFolderShares]);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      const r = await createFolderShare({
+        topicId: target.topicId,
+        folderId: target.folderId,
+        password: password || undefined,
+        expiresIn: expiresIn || undefined,
+      });
+      setResult({ code: r.code, url: r.url });
+      await loadFolderShares();
+      onShareCreated?.();
+    } catch (e: any) {
+      alert('Create failed: ' + e.message);
+    }
+    setCreating(false);
+  };
+
+  const handleDelete = async (code: string) => {
+    await deleteFolderShare(code);
+    await loadFolderShares();
+    onShareCreated?.();
+  };
+
+  const handleCopyLink = async (code: string) => {
+    const url = window.location.origin + '/dl/f/' + code;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { alert('Copy failed. Link: ' + url); }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => !creating && onClose()}>
+      <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h2 style={{ margin: 0, color: '#ffffff', fontSize: '1.125rem' }}>📁 Share Folder — {target.name}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888888', fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
+        </div>
+
+        {!result ? (
+          <>
+            <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              <input type="text" placeholder="Password (optional)" value={password} onChange={e => setPassword(e.target.value)}
+                style={{ flex: 1, minWidth: 80, padding: '.5rem', borderRadius: 6, border: '1px solid #242424', background: '#121212', color: '#cccccc', fontSize: '.875rem' }} />
+              <button onClick={() => { setPasswordLength(4); generatePassword(4); }} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #242424', background: passwordLength === 4 ? '#242424' : 'transparent', color: passwordLength === 4 ? '#faff69' : '#5a5a5a', cursor: 'pointer', fontSize: '.75rem', fontWeight: 600 }}>4位</button>
+              <button onClick={() => { setPasswordLength(6); generatePassword(6); }} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #242424', background: passwordLength === 6 ? '#242424' : 'transparent', color: passwordLength === 6 ? '#faff69' : '#5a5a5a', cursor: 'pointer', fontSize: '.75rem', fontWeight: 600 }}>6位</button>
+              <button onClick={() => generatePassword(passwordLength)} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #242424', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>🔑生成</button>
+              <select value={expiresIn} onChange={e => setExpiresIn(Number(e.target.value))}
+                style={{ padding: '.5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem' }}>
+                <option value={0}>No expiry</option>
+                <option value={3600}>1 hour</option>
+                <option value={21600}>6 hours</option>
+                <option value={86400}>24 hours</option>
+                <option value={259200}>3 days</option>
+                <option value={604800}>7 days</option>
+                <option value={2592000}>30 days</option>
+              </select>
+              <button onClick={handleCreate} disabled={creating} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer' }}>
+                {creating ? '...' : 'Create'}
+              </button>
+            </div>
+
+            {shares.length > 0 && (
+              <div style={{ marginTop: '1rem' }}>
+                <h3 style={{ color: '#888888', fontSize: '.8rem', marginBottom: '.5rem', textTransform: 'uppercase' }}>Existing Shares</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+                  {shares.map((s: any) => (
+                    <div key={s.code} style={{ display: 'flex', alignItems: 'center', gap: '.5rem', padding: '.5rem .75rem', background: '#121212', borderRadius: 6, fontSize: '.875rem' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <a href={s.expiresAt && Date.now() > s.expiresAt ? '#' : `/dl/f/${s.code}`} target="_blank" style={{ color: '#faff69', textDecoration: 'none', fontFamily: 'monospace' }}>/dl/f/{s.code}</a>
+                        <span style={{ color: '#5a5a5a', fontSize: '.75rem', marginLeft: '.5rem' }}>{s.fileCount} files</span>
+                        {s.hasPassword && <span style={{ marginLeft: '.25rem' }}>🔒</span>}
+                        {s.expiresAt && Date.now() > s.expiresAt && <span style={{ color: '#f87171', marginLeft: '.5rem', fontSize: '.75rem' }}>expired</span>}
+                      </div>
+                      <button onClick={() => handleCopyLink(s.code)} style={{ padding: '.3rem .5rem', borderRadius: 4, border: 'none', background: copied ? '#22c55e' : '#242424', color: copied ? '#ffffff' : '#888888', cursor: 'pointer', fontSize: '.75rem' }}>
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                      <button onClick={() => handleDelete(s.code)} style={{ padding: '.3rem .5rem', borderRadius: 4, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.75rem' }}>Delete</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+            <p style={{ color: '#22c55e', fontSize: '1rem', marginBottom: '.5rem' }}>✅ Share link created!</p>
+            <div style={{ background: '#121212', padding: '.75rem', borderRadius: 8, margin: '1rem 0', wordBreak: 'break-all' }}>
+              <code style={{ color: '#faff69', fontSize: '.9rem' }}>{window.location.origin}/dl/f/{result.code}</code>
+            </div>
+            <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'center' }}>
+              <button onClick={() => handleCopyLink(result.code)} style={{ padding: '.6rem 1.2rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer' }}>
+                {copied ? '✅ Copied!' : '📋 Copy Link'}
+              </button>
+              <a href={`/dl/f/${result.code}`} target="_blank" style={{ padding: '.6rem 1.2rem', borderRadius: 6, border: '1px solid #334155', color: '#ffffff', textDecoration: 'none', cursor: 'pointer', display: 'inline-block' }}>
+                🔗 Open
+              </a>
+              <button onClick={() => { setResult(null); setPassword(''); }} style={{ padding: '.6rem 1.2rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer' }}>
+                Create Another
+              </button>
+            </div>
+            {shares.length > 0 && (
+              <div style={{ marginTop: '1rem', textAlign: 'left' }}>
+                <h3 style={{ color: '#5a5a5a', fontSize: '.8rem', marginBottom: '.35rem' }}>Your folder shares</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.25rem' }}>
+                  {shares.map((s: any) => (
+                    <div key={s.code} style={{ fontSize: '.8rem', padding: '.35rem .5rem', background: '#121212', borderRadius: 4, color: '#888888', fontFamily: 'monospace' }}>
+                      {s.code} ({s.fileCount} files)
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Share helper functions ───
 function formatExpiry(expiresAt: number | null): { label: string; color: string } {
   if (!expiresAt) return { label: 'Never', color: c.mutedSoft };
@@ -215,6 +370,7 @@ function Dashboard() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [newTopicName, setNewTopicName] = useState('');
   const [shareFile, setShareFile] = useState<DriveFile | null>(null);
+  const [folderShareTarget, setFolderShareTarget] = useState<{ topicId: number; folderId: number | null; name: string } | null>(null);
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [renaming, setRenaming] = useState<{ id: number; name: string; type: 'topic' | 'file' | 'folder' } | null>(null);
@@ -1220,6 +1376,8 @@ function Dashboard() {
                       <span style={{ fontSize: '.8rem', color: '#cccccc', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', whiteSpace: 'nowrap' }}>{f.name}</span>
                       <span style={{ fontSize: '.7rem', color: '#5a5a5a' }}>{f.fileCount} files</span>
                       <div style={{ display: 'flex', gap: '.25rem', marginTop: '.25rem' }}>
+                        <button onClick={(e) => { e.stopPropagation(); setFolderShareTarget({ topicId: currentTopic!.topicId, folderId: f.id, name: f.name }); }}
+                          style={{ padding: '.2rem .4rem', borderRadius: 3, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.7rem' }}>🔗</button>
                         <button onClick={(e) => { e.stopPropagation(); setRenaming({ id: f.id, name: f.name, type: 'folder' }); }}
                           style={{ padding: '.2rem .4rem', borderRadius: 3, border: 'none', background: '#242424', color: '#888888', cursor: 'pointer', fontSize: '.7rem' }}>✎</button>
                         <button onClick={(e) => { e.stopPropagation(); if (confirm('Delete folder "' + f.name + '"?')) handleDeleteFolder(f.id); }}
@@ -1420,6 +1578,15 @@ function Dashboard() {
 
       {/* Share per-file modal */}
       {shareFile && <ShareManager file={shareFile} onClose={() => { setShareFile(null); loadShares(); }} onShareCreated={loadShares} />}
+
+      {/* Folder Share Modal */}
+      {folderShareTarget && (
+        <FolderShareModal
+          target={folderShareTarget}
+          onClose={() => { setFolderShareTarget(null); loadShares(); }}
+          onShareCreated={() => loadShares()}
+        />
+      )}
 
       {/* Preview Modal */}
       {previewFile && (

@@ -217,6 +217,42 @@ export async function renameFolder(env: Env, folderId: number, name: string): Pr
   return result.success;
 }
 
+/**
+ * List all files in a folder subtree (recursive: includes subfolders).
+ * If folderId is null, returns all files at the topic root (no folder).
+ */
+export async function listFilesInTree(env: Env, topicId: number, folderId: number | null): Promise<FileResponse[]> {
+  if (folderId === null) {
+    const rows = await env.DB.prepare(
+      "SELECT * FROM files WHERE topic_id = ? AND folder_id IS NULL ORDER BY name"
+    ).bind(topicId).all<FileRow>().then(r => r.results);
+    return rows.map(r => ({
+      id: r.id, topicId: r.topic_id, folderId: r.folder_id,
+      name: r.name, size: r.size, mimeType: r.mime_type,
+      chunkCount: r.chunk_count, createdAt: r.created_at,
+    }));
+  }
+
+  // Recursive CTE: find all descendant folders, then list files in those folders
+  const rows = await env.DB.prepare(
+    `WITH RECURSIVE subfolders AS (
+       SELECT id FROM folders WHERE id = ? AND topic_id = ?
+       UNION ALL
+       SELECT f.id FROM folders f JOIN subfolders s ON f.parent_id = s.id
+     )
+     SELECT f.* FROM files f
+     WHERE f.topic_id = ?
+       AND f.folder_id IN (SELECT id FROM subfolders)
+     ORDER BY f.name`
+  ).bind(folderId, topicId, topicId).all<FileRow>().then(r => r.results);
+
+  return rows.map(r => ({
+    id: r.id, topicId: r.topic_id, folderId: r.folder_id,
+    name: r.name, size: r.size, mimeType: r.mime_type,
+    chunkCount: r.chunk_count, createdAt: r.created_at,
+  }));
+}
+
 export async function deleteFolder(env: Env, folderId: number): Promise<boolean> {
   // Find the parent for reassignment
   const folder = await env.DB.prepare('SELECT parent_id FROM folders WHERE id = ?').bind(folderId).first<FolderRow>();

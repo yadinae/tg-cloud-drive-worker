@@ -6,6 +6,8 @@
 
 ## ✨ 特性
 
+- **文件夹分享**：分享整个文件夹（含子文件夹），一键生成下载页
+- **在线图库**：图片文件夹自动生成画廊模式，支持直链热链供外部网站调用
 - **文件预览**：支持图片、视频、音频、PDF、Markdown、代码/文本文件的在线预览（7 种预览方式）
 - **拖放上传**：支持文件/文件夹拖放上传，保持目录结构
 - **分享链接**：可设密码保护、过期时间、访问次数统计
@@ -109,6 +111,11 @@ bash deploy.sh
 | POST | `/api/shares/verify` | 验证分享密码 |
 | GET | `/dl/:code` | 分享下载页面 |
 | GET | `/dl/:code/raw` | 分享直链下载 |
+| GET | `/dl/f/:code` | **文件夹分享下载页面** |
+| GET | `/dl/f/:code/raw/:fileId` | **文件夹分享直链文件下载** |
+| GET | `/dl/f/:code/gallery` | **图片画廊模式** |
+| GET | `/img/:code/:fileId` | **图片直链热链 (CORS)** |
+| POST | `/api/shares/folder/verify` | **验证文件夹分享密码** ||
 
 ### 认证接口（需 `Authorization: Bearer <token>`）
 
@@ -151,11 +158,15 @@ bash deploy.sh
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/shares` | 创建分享链接 (可设密码/过期) |
+| POST | `/api/shares` | 创建文件分享链接 (可设密码/过期) |
 | GET | `/api/shares?fileId=` | 查看某个文件的分享链接 |
 | GET | `/api/shares/list-all` | 查看所有分享链接 |
 | PUT | `/api/shares/:code` | 修改分享 (密码/过期) |
 | DELETE | `/api/shares/:code` | 撤销分享链接 |
+| POST | `/api/shares/folder` | **创建文件夹分享链接** |
+| GET | `/api/shares/folder/list-all` | **查看所有文件夹分享** |
+| PUT | `/api/shares/folder/:code` | **修改文件夹分享** |
+| DELETE | `/api/shares/folder/:code` | **撤销文件夹分享** |
 
 #### 管理
 

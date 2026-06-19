@@ -133,3 +133,46 @@ export interface FolderResponse {
   fileCount: number;
   createdAt: number;
 }
+
+// ───── Folder Share Types ─────
+export interface FolderShareCreatePayload {
+  topicId: number;
+  folderId?: number | null; // null = topic root
+  password?: string;
+  expiresIn?: number; // seconds from now
+}
+
+export interface FolderShareUpdatePayload {
+  password?: string;  // empty string to remove, omit to keep
+  expiresIn?: number; // 0 to remove expiry, omit to keep
+}
+
+export interface FolderShareRecord {
+  topicId: number;
+  folderId: number | null;
+  name: string;        // display name (folder name or topic name)
+  passwordHash: string | null;
+  createdAt: number;
+  downloadCount: number;
+  expiresAt: number | null;
+  fileCount: number;
+}
+
+export interface FolderShareResponse {
+  code: string;
+  topicId: number;
+  folderId: number | null;
+  name: string;
+  fileCount: number;
+  hasPassword: boolean;
+  expiresAt: number | null;
+  downloadCount: number;
+  createdAt: number;
+}
+
+export interface FolderShareVerifyResponse {
+  ok: boolean;
+  files?: FileResponse[];
+  name?: string;
+  error?: string;
+}

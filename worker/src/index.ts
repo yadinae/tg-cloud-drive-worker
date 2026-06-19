@@ -18,6 +18,7 @@ import {
   createFolder,
   renameFolder,
   deleteFolder,
+  listFilesInTree,
 } from './metadata';
 import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload, transferFileByUrl, cleanupUploadChunks, cleanupAllOrphanUploads } from './storage';
 import {
@@ -28,6 +29,12 @@ import {
   listAllShares,
   updateShare,
   deleteShare,
+  createFolderShare,
+  getFolderShare,
+  verifyFolderSharePassword,
+  listAllFolderShares,
+  updateFolderShare,
+  deleteFolderShare,
 } from './shares';
 import { verifyBotConnection, deleteFileMessages, createForumTopic, renameForumTopic, deleteForumTopic } from './bot';
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
@@ -184,6 +191,14 @@ app.post('/api/shares/verify', async (c) => {
   const { code, password } = await c.req.json();
   if (!code) return c.json({ error: 'code required' }, 400);
   const result = await verifySharePassword(code, password || '', c.env);
+  return c.json(result);
+});
+
+// ───── Folder Share Verify (public) ─────
+app.post('/api/shares/folder/verify', async (c) => {
+  const { code, password } = await c.req.json();
+  if (!code) return c.json({ error: 'code required' }, 400);
+  const result = await verifyFolderSharePassword(code, password || '', c.env);
   return c.json(result);
 });
 
@@ -525,6 +540,40 @@ app.put('/api/shares/:code', async (c) => {
   return c.json(result);
 });
 
+// ───── Folder Share Links (auth required) ─────
+
+// POST /api/shares/folder — create folder share
+app.post('/api/shares/folder', async (c) => {
+  const payload = await c.req.json();
+  const result = await createFolderShare(c.env, payload);
+  if ('error' in result) return c.json(result, 400);
+  const url = new URL(c.req.url);
+  result.url = `${url.origin}/dl/f/${result.code}`;
+  return c.json({ ok: true, ...result }, 201);
+});
+
+// GET /api/shares/folder/list-all — list ALL folder shares
+app.get('/api/shares/folder/list-all', async (c) => {
+  const shares = await listAllFolderShares(c.env);
+  return c.json({ shares });
+});
+
+// DELETE /api/shares/folder/:code — revoke folder share
+app.delete('/api/shares/folder/:code', async (c) => {
+  const code = c.req.param('code');
+  const ok = await deleteFolderShare(c.env, code);
+  return c.json({ ok });
+});
+
+// PUT /api/shares/folder/:code — update folder share
+app.put('/api/shares/folder/:code', async (c) => {
+  const code = c.req.param('code');
+  const payload = await c.req.json();
+  const result = await updateFolderShare(c.env, code, payload);
+  if (!result.ok) return c.json(result, 404);
+  return c.json(result);
+});
+
 // ───── Admin: Clean all orphan upload chunks ─────
 app.post('/api/admin/cleanup-orphans', async (c) => {
   try {
@@ -637,6 +686,92 @@ app.get('/api/admin/identify/:topicId', async (c) => {
   const data: any = await res.json();
   if (!data.ok) return c.json({ error: data.description }, 500);
   return c.json({ ok: true, message: `Sent ID card to topic ${topicId}` });
+});
+
+// ───── Public: Folder Share Download ─────
+// GET /dl/f/:code — folder share page (list files with download links)
+app.get('/dl/f/:code', async (c) => {
+  const code = c.req.param('code');
+  const shareInfo = await getFolderShare(code, c.env);
+  if (!shareInfo.ok) {
+    return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Folder Share</title><style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#1e293b;border-radius:12px;padding:2rem;max-width:400px;text-align:center}.error{color:#f87171}</style></head><body><div class="card"><h1 class="error">❌ ${shareInfo.error}</h1></div></body></html>`);
+  }
+  const share = shareInfo.share!;
+  if (share.hasPassword) {
+    return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: true, origin: new URL(c.req.url).origin }));
+  }
+  return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: false, origin: new URL(c.req.url).origin }));
+});
+
+// GET /dl/f/:code/raw/:fileId — download specific file from folder share
+app.get('/dl/f/:code/raw/:fileId', async (c) => {
+  const code = c.req.param('code');
+  const fileId = Number(c.req.param('fileId'));
+  // Verify share
+  const shareInfo = await getFolderShare(code, c.env);
+  if (!shareInfo.ok) return c.json({ error: shareInfo.error }, 404);
+  // Verify the file belongs to this share's folder tree
+  const files = await listFilesInTree(c.env, shareInfo.share!.topicId, shareInfo.share!.folderId);
+  if (!files.some(f => f.id === fileId)) {
+    return c.json({ error: 'File not found in this share' }, 404);
+  }
+  return downloadFileStream(c.env, fileId, c.req.header('Range'), true);
+});
+
+// GET /dl/f/:code/gallery — image gallery page
+app.get('/dl/f/:code/gallery', async (c) => {
+  const code = c.req.param('code');
+  const shareInfo = await getFolderShare(code, c.env);
+  if (!shareInfo.ok) {
+    return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Gallery</title><style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#1e293b;border-radius:12px;padding:2rem;max-width:400px;text-align:center}.error{color:#f87171}</style></head><body><div class="card"><h1 class="error">❌ ${shareInfo.error}</h1></div></body></html>`);
+  }
+  const share = shareInfo.share!;
+  const isGalleryMode = c.req.query('pwd') !== undefined;
+  // If password-protected and no pwd param, show password form
+  if (share.hasPassword && !c.req.query('pwd')) {
+    return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: true, origin: new URL(c.req.url).origin }));
+  }
+  // Verify password if needed
+  if (share.hasPassword) {
+    const verify = await verifyFolderSharePassword(code, c.req.query('pwd') || '', c.env);
+    if (!verify.ok) return c.html(`<html><body style="background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh"><div class="card" style="background:#1e293b;border-radius:12px;padding:2rem;text-align:center"><h1 style="color:#f87171">❌ ${verify.error}</h1><a href="/dl/f/${code}" style="color:#38bdf8">Back</a></div></body></html>`);
+  }
+  // Load files
+  const files = await listFilesInTree(c.env, share.topicId, share.folderId);
+  const images = files.filter(f => f.mimeType.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name));
+  return c.html(galleryPageHTML({ code, shareName: share.name, images, origin: new URL(c.req.url).origin }));
+});
+
+// ───── Public: Image Hotlink ─────
+// GET /img/:code/:fileId — direct image URL for hotlinking (proper MIME + CORS)
+app.get('/img/:code/:fileId', async (c) => {
+  const code = c.req.param('code');
+  const fileId = Number(c.req.param('fileId'));
+  // Verify share exists and is valid
+  const shareInfo = await getFolderShare(code, c.env);
+  if (!shareInfo.ok) {
+    return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+  }
+  // Verify file belongs to the share
+  const files = await listFilesInTree(c.env, shareInfo.share!.topicId, shareInfo.share!.folderId);
+  if (!files.some(f => f.id === fileId)) {
+    return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+  }
+  // Stream file as image with CORS
+  const response = await downloadFileStream(c.env, fileId, undefined, false);
+  // Override CORS and cache headers for hotlinking
+  const headers = new Headers(response.headers);
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  // Ensure Content-Type is image-friendly
+  const ct = headers.get('Content-Type') || '';
+  if (!ct.startsWith('image/') && !ct.includes('octet-stream')) {
+    // Leave as-is — it already has the right type from the file record
+  }
+  return new Response(response.body, {
+    status: response.status,
+    headers,
+  });
 });
 
 // ───── Public: Share Download ─────
@@ -797,6 +932,267 @@ async function doDownload(){
 }
 function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
 </script>
+</body>
+</html>`;
+}
+
+/**
+ * Generate the folder share page HTML — lists all files in a shared folder with download links.
+ */
+function shareFolderPageHTML(p: { code: string; shareName: string; fileCount: number; requiresPassword: boolean; origin: string }): string {
+  const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const name = esc(p.shareName);
+  const rawUrl = `/dl/f/${p.code}`;
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Folder — ${name}</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh;padding:2rem 1rem}
+.card{background:#1e293b;border-radius:12px;padding:2rem;max-width:720px;margin:0 auto}
+h1{color:#38bdf8;font-size:1.2rem;margin-bottom:0;word-break:break-all;display:flex;align-items:center;gap:.5rem}
+.meta{color:#94a3b8;font-size:.85rem;margin:.35rem 0 1rem}
+label{display:block;color:#94a3b8;font-size:.85rem;margin-bottom:.5rem;text-align:left}
+input[type=password]{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:1rem;outline:none}
+input[type=password]:focus{border-color:#38bdf8}
+.btn{width:100%;margin-top:.75rem;padding:.75rem;border-radius:8px;border:none;font-size:1rem;font-weight:600;cursor:pointer;transition:.15s}
+.btn-primary{background:#38bdf8;color:#0f172a}
+.btn-primary:hover{background:#7dd3fc}
+.btn-primary:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.error{color:#f87171;font-size:.85rem;margin-top:.5rem;display:none}
+.file-list{display:flex;flex-direction:column;gap:.5rem;margin-top:1rem}
+.file-item{display:flex;align-items:center;padding:.75rem 1rem;background:#334155;border-radius:8px;gap:.75rem;text-decoration:none;color:#e2e8f0;transition:.15s}
+.file-item:hover{background:#475569}
+.file-icon{font-size:1.25rem;flex-shrink:0}
+.file-info{flex:1;min-width:0}
+.file-name{font-size:.875rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-size{font-size:.75rem;color:#94a3b8}
+.file-dl-btn{padding:.4rem .75rem;border-radius:6px;border:none;background:#38bdf8;color:#0f172a;cursor:pointer;font-size:.8rem;font-weight:600;text-decoration:none;flex-shrink:0}
+.gallery-link{display:inline-block;margin-top:1rem;padding:.5rem 1rem;border-radius:8px;background:linear-gradient(135deg,#38bdf8,#818cf8);color:#ffffff;text-decoration:none;font-size:.875rem;font-weight:600}
+.embed-section{background:#1e293b;border-radius:8px;padding:1rem;margin-top:1rem;border:1px solid #334155}
+.embed-section h3{color:#94a3b8;font-size:.8rem;margin-bottom:.5rem;text-transform:uppercase}
+.embed-code{background:#0f172a;padding:.5rem;border-radius:4px;font-size:.75rem;font-family:monospace;color:#7dd3fc;word-break:break-all;user-select:all}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📁 ${name}</h1>
+  <div class="meta">${p.fileCount} files</div>
+  ${p.requiresPassword ? `
+  <div id="pw-wrap">
+    <label for="pwd">此文件夹受密码保护</label>
+    <input type="password" id="pwd" placeholder="输入密码" autocomplete="off">
+    <div class="error" id="error"></div>
+    <button class="btn btn-primary" id="verify-btn" onclick="verifyPassword()">确认</button>
+  </div>
+  <div id="content-wrap" style="display:none">` : `<div id="content-wrap">`}
+    <div id="file-list" class="file-list">
+      <div style="text-align:center;padding:2rem;color:#94a3b8">加载文件中...</div>
+    </div>
+    <a href="/dl/f/${p.code}/gallery${p.requiresPassword ? '?pwd=' : ''}" class="gallery-link" id="gallery-link" style="display:none">🖼️ 图片画廊模式</a>
+    <div class="embed-section" id="embed-section" style="display:none">
+      <h3>🔗 图片直链 (供外部网站调用)</h3>
+      <p style="color:#94a3b8;font-size:.75rem;margin-bottom:.5rem">点击图片下方的链接复制，用 <code>&lt;img&gt;</code> 标签嵌入</p>
+    </div>
+  </div>
+</div>
+<script>
+${p.requiresPassword ? `
+async function verifyPassword(){
+  const btn=document.getElementById('verify-btn');
+  const err=document.getElementById('error');
+  const pwd=document.getElementById('pwd').value;
+  err.style.display='none';btn.disabled=true;btn.textContent='验证中...';
+  try{
+    const res=await fetch('/api/shares/folder/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:pwd})});
+    const data=await res.json();
+    if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='确认';return}
+    showFiles(data.files||[], data.name);
+  }catch(e){err.textContent='网络错误，请重试';err.style.display='block';btn.disabled=false;btn.textContent='确认'}
+}` : `
+async function init(){try{const r=await fetch('/api/shares/folder/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:''})});const d=await r.json();if(d.ok)showFiles(d.files||[], d.name)}catch(e){}}
+init();`}
+function showFiles(files, folderName){
+  const wrap=document.getElementById('content-wrap');wrap.style.display='block';
+  const list=document.getElementById('file-list');list.innerHTML='';
+  const hasImages=files.some(f=>/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name));
+  if(hasImages)document.getElementById('gallery-link').style.display='inline-block';
+  if(files.length===0){list.innerHTML='<div style="text-align:center;padding:2rem;color:#94a3b8">文件夹为空</div>';return}
+  files.forEach(f=>{
+    const icon=f.name.match(/\\.(png|jpg|jpeg|gif|webp|bmp)$/i)?'🖼️':
+      f.name.match(/\\.(mp4|webm|mkv|mov)$/i)?'🎬':
+      f.name.match(/\\.(mp3|wav|flac)$/i)?'🎵':
+      f.name.match(/\\.(pdf)$/i)?'📕':
+      f.name.match(/\\.(zip|rar|7z|tar|gz)$/i)?'📦':
+      f.name.match(/\\.(js|ts|py|go|rs|java)$/i)?'💻':'📄';
+    const sz=fmt(f.size);
+    const isImg=/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name);
+    const item=document.createElement('div');item.className='file-list';
+    const dlUrl='/dl/f/${p.code}/raw/'+f.id;
+    const imgUrl='/img/${p.code}/'+f.id;
+    item.innerHTML=\`
+      <a href="\${dlUrl}" class="file-item">
+        <span class="file-icon">\${icon}</span>
+        <span class="file-info">
+          <span class="file-name">\${esc(f.name)}</span>
+          <span class="file-size">\${sz}</span>
+        </span>
+        <span class="file-dl-btn">⬇ 下载</span>
+      </a>
+      \${isImg?'<div style="display:flex;align-items:center;gap:.5rem;padding:.25rem 0 0 2.5rem;font-size:.75rem;color:#94a3b8">🔗 直链: <code class="embed-code" style="font-size:.7rem;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent)">${p.origin}\${imgUrl}</code></div>':''}
+    \`.trim();
+    list.appendChild(item.firstElementChild);
+    if(isImg){const embed=list.appendChild(document.createElement('div'));embed.outerHTML=item.querySelector('div')?.outerHTML||'';}
+  });
+  if(hasImages)document.getElementById('embed-section').style.display='block';
+}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * Generate the image gallery page HTML — responsive grid with lightbox.
+ */
+function galleryPageHTML(p: { code: string; shareName: string; images: any[]; origin: string }): string {
+  const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const name = esc(p.shareName);
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Gallery — ${name}</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh}
+header{padding:1.5rem 2rem;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem}
+header h1{color:#38bdf8;font-size:1.2rem;display:flex;align-items:center;gap:.5rem}
+header .meta{color:#94a3b8;font-size:.85rem}
+header .links{display:flex;gap:.5rem}
+header .links a{padding:.4rem .8rem;border-radius:6px;text-decoration:none;font-size:.8rem;font-weight:600;background:#334155;color:#e2e8f0;transition:.15s}
+header .links a:hover{background:#475569}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.75rem;padding:1.5rem 2rem}
+.gallery-item{position:relative;border-radius:8px;overflow:hidden;background:#1e293b;cursor:pointer;aspect-ratio:1;transition:transform .15s,box-shadow .15s}
+.gallery-item:hover{transform:scale(1.02);box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.gallery-item img{width:100%;height:100%;object-fit:cover;display:block}
+.gallery-item .info{position:absolute;bottom:0;left:0;right:0;padding:.5rem;background:linear-gradient(transparent,rgba(0,0,0,.8));font-size:.75rem;color:#e2e8f0;opacity:0;transition:opacity .2s}
+.gallery-item:hover .info{opacity:1}
+.gallery-item .info .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gallery-item .info .size{color:#94a3b8;font-size:.7rem}
+
+/* Lightbox */
+#lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9999;align-items:center;justify-content:center;flex-direction:column;padding:2rem}
+#lightbox.show{display:flex}
+#lightbox img{max-width:95%;max-height:85vh;border-radius:8px;object-fit:contain}
+#lightbox .lb-info{color:#94a3b8;font-size:.85rem;margin-top:1rem;text-align:center}
+#lightbox .lb-info a{color:#38bdf8;text-decoration:none}
+#lightbox .lb-nav{position:absolute;top:50%;transform:translateY(-50%);font-size:2.5rem;color:#94a3b8;cursor:pointer;padding:1rem;user-select:none;transition:color .15s}
+#lightbox .lb-nav:hover{color:#ffffff}
+#lightbox .lb-prev{left:1rem}
+#lightbox .lb-next{right:1rem}
+#lightbox .lb-close{position:absolute;top:1rem;right:1.5rem;font-size:2rem;color:#94a3b8;cursor:pointer;background:none;border:none;transition:color .15s}
+#lightbox .lb-close:hover{color:#ffffff}
+#lightbox .lb-counter{position:absolute;bottom:1.5rem;color:#5a5a5a;font-size:.8rem}
+#lightbox .lb-hotlink{position:absolute;bottom:1.5rem;color:#7dd3fc;font-size:.75rem;background:#1e293b;padding:.35rem .75rem;border-radius:6px;cursor:pointer;user-select:all}
+@media(max-width:600px){header{padding:1rem}.gallery{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));padding:1rem;gap:.5rem}#lightbox{padding:1rem}#lightbox img{max-width:100%}#lightbox .lb-nav{font-size:1.5rem}}
+.empty{text-align:center;padding:4rem 2rem;color:#94a3b8}
+.empty p{font-size:1.125rem;margin-bottom:.5rem}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🖼️ ${name}</h1>
+    <div class="meta">${p.images.length} images</div>
+  </div>
+  <div class="links">
+    <a href="/dl/f/${p.code}">📁 文件列表</a>
+  </div>
+</header>
+
+${p.images.length === 0 ? `
+<div class="empty">
+  <p style="font-size:3rem;margin-bottom:.5rem">🖼️</p>
+  <p>此文件夹没有图片</p>
+  <p style="font-size:.875rem;margin-top:.25rem;color:#5a5a5a">只有图片文件才会显示在画廊中</p>
+</div>` : `
+<div class="gallery" id="gallery">
+  ${p.images.map((img, idx) => {
+    const imgUrl = `/img/${p.code}/${img.id}`;
+    const thumbUrl = `/dl/f/${p.code}/raw/${img.id}`; // proxy for thumbnail
+    return `<div class="gallery-item" onclick="openLightbox(${idx})">
+      <img src="${thumbUrl}" alt="${esc(img.name)}" loading="lazy">
+      <div class="info">
+        <div class="name">${esc(img.name)}</div>
+        <div class="size">${formatBytes(img.size)}</div>
+      </div>
+    </div>`;
+  }).join('\n  ')}
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="closeLightbox(event)">
+  <button class="lb-close" onclick="closeLightbox()">✕</button>
+  <span class="lb-nav lb-prev" onclick="event.stopPropagation();prevImage()">‹</span>
+  <span class="lb-nav lb-next" onclick="event.stopPropagation();nextImage()">›</span>
+  <img id="lb-img" src="" alt="">
+  <div class="lb-info" id="lb-info"></div>
+  <div class="lb-counter" id="lb-counter"></div>
+</div>
+
+<script>
+const images = ${JSON.stringify(p.images.map(img => ({
+    id: img.id,
+    name: img.name,
+    size: img.size,
+    url: '/img/${p.code}/' + img.id,
+    thumbUrl: '/dl/f/${p.code}/raw/' + img.id,
+    hotlink: '${p.origin}/img/${p.code}/' + img.id,
+  })))};
+let currentIdx = 0;
+
+function openLightbox(idx) {
+  currentIdx = idx;
+  const img = images[idx];
+  document.getElementById('lb-img').src = img.url;
+  document.getElementById('lb-info').innerHTML = esc(img.name) + ' · ' + fmt(img.size) + ' — <a href="' + img.hotlink + '" target="_blank" onclick="event.stopPropagation()">🔗 直链</a>';
+  document.getElementById('lb-counter').textContent = (idx + 1) + ' / ' + images.length;
+  document.getElementById('lightbox').classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('lightbox').classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function nextImage() {
+  openLightbox((currentIdx + 1) % images.length);
+}
+
+function prevImage() {
+  openLightbox((currentIdx - 1 + images.length) % images.length);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('lightbox').classList.contains('show')) return;
+  if (e.key === 'Escape') closeLightbox(e);
+  if (e.key === 'ArrowRight') nextImage();
+  if (e.key === 'ArrowLeft') prevImage();
+});
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
+</script>`}
 </body>
 </html>`;
 }

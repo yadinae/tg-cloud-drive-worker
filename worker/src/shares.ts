@@ -1,5 +1,5 @@
-import type { Env, ShareResponse, ShareCreatePayload, ShareUpdatePayload } from './types';
-import { getFile } from './metadata';
+import type { Env, ShareResponse, ShareCreatePayload, ShareUpdatePayload, FolderShareCreatePayload, FolderShareUpdatePayload, FolderShareRecord, FolderShareResponse } from './types';
+import { getFile, listFilesInTree } from './metadata';
 import { getTelegramFilePath } from './bot';
 
 // ───── SHA-256 helper ─────
@@ -303,5 +303,245 @@ export async function deleteShare(env: Env, code: string): Promise<boolean> {
   }
 
   await env.SHARES.delete(`${SHARE_PREFIX}${code}`);
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Folder Shares (share an entire folder subtree)
+// ════════════════════════════════════════════════════════════════
+
+const FOLDER_SHARE_PREFIX = 'fshare:';
+
+/**
+ * Create a folder share link.
+ */
+export async function createFolderShare(
+  env: Env,
+  payload: FolderShareCreatePayload,
+): Promise<{ code: string; url: string } | { error: string }> {
+  const { topicId, folderId, password, expiresIn } = payload;
+
+  // Generate 8-char unique code
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let code = '';
+  for (let attempt = 0; attempt < 10; attempt++) {
+    code = '';
+    for (let i = 0; i < 8; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const existing = await env.SHARES.get(`${FOLDER_SHARE_PREFIX}${code}`);
+    if (!existing) break;
+    if (attempt === 9) return { error: 'Failed to generate unique share code' };
+  }
+
+  const now = Date.now();
+  let passwordHash: string | null = null;
+  if (password) {
+    passwordHash = await sha256(password);
+  }
+
+  let expiresAt: number | null = null;
+  if (expiresIn && expiresIn > 0) {
+    expiresAt = now + expiresIn * 1000;
+  }
+
+  const record: FolderShareRecord = {
+    topicId,
+    folderId: folderId ?? null,
+    name: '', // filled below
+    passwordHash,
+    createdAt: now,
+    downloadCount: 0,
+    expiresAt,
+    fileCount: 0,
+  };
+
+  // Count files and get a display name
+  const files = await listFilesInTree(env, topicId, folderId ?? null);
+  record.fileCount = files.length;
+
+  if (folderId != null && folderId !== undefined) {
+    try {
+      const folder = await env.DB.prepare('SELECT name FROM folders WHERE id = ?').bind(folderId).first<{ name: string }>();
+      record.name = folder?.name || `Folder ${folderId}`;
+    } catch {
+      record.name = `Folder ${folderId}`;
+    }
+  } else {
+    const topic = await env.DB.prepare('SELECT name FROM topics WHERE topic_id = ?').bind(topicId).first<{ name: string }>();
+    record.name = topic?.name || `Topic ${topicId}`;
+  }
+
+  await env.SHARES.put(`${FOLDER_SHARE_PREFIX}${code}`, JSON.stringify(record));
+  return { code, url: '' };
+}
+
+/**
+ * Get folder share info.
+ */
+export async function getFolderShare(code: string, env: Env): Promise<{
+  ok: boolean;
+  share?: FolderShareResponse;
+  error?: string;
+}> {
+  const raw = await env.SHARES.get(`${FOLDER_SHARE_PREFIX}${code}`);
+  if (!raw) {
+    return { ok: false, error: 'Share link not found' };
+  }
+
+  const record: FolderShareRecord = JSON.parse(raw);
+
+  if (record.expiresAt && Date.now() > record.expiresAt) {
+    return { ok: false, error: 'Share link has expired' };
+  }
+
+  return {
+    ok: true,
+    share: {
+      code,
+      topicId: record.topicId,
+      folderId: record.folderId,
+      name: record.name,
+      fileCount: record.fileCount,
+      hasPassword: !!record.passwordHash,
+      expiresAt: record.expiresAt,
+      downloadCount: record.downloadCount,
+      createdAt: record.createdAt,
+    },
+  };
+}
+
+/**
+ * Verify folder share password and return file list.
+ */
+export async function verifyFolderSharePassword(
+  code: string,
+  password: string,
+  env: Env,
+): Promise<{
+  ok: boolean;
+  files?: any[];
+  name?: string;
+  error?: string;
+  fileCount?: number;
+}> {
+  const raw = await env.SHARES.get(`${FOLDER_SHARE_PREFIX}${code}`);
+  if (!raw) {
+    return { ok: false, error: 'Share link not found' };
+  }
+
+  const record: FolderShareRecord = JSON.parse(raw);
+
+  if (record.expiresAt && Date.now() > record.expiresAt) {
+    return { ok: false, error: 'Share link has expired' };
+  }
+
+  if (record.passwordHash) {
+    const hash = await sha256(password);
+    if (hash !== record.passwordHash) {
+      return { ok: false, error: 'Invalid password' };
+    }
+  }
+
+  // Increment download count
+  record.downloadCount = (record.downloadCount || 0) + 1;
+  await env.SHARES.put(`${FOLDER_SHARE_PREFIX}${code}`, JSON.stringify(record));
+
+  // List files in the folder tree — use static import
+  const files = await listFilesInTree(env, record.topicId, record.folderId);
+
+  return {
+    ok: true,
+    files: files.map(f => ({
+      id: f.id,
+      name: f.name,
+      size: f.size,
+      mimeType: f.mimeType,
+      createdAt: f.createdAt,
+    })),
+    name: record.name,
+    fileCount: record.fileCount,
+  };
+}
+
+/**
+ * List all folder shares.
+ */
+export async function listAllFolderShares(env: Env): Promise<FolderShareResponse[]> {
+  const shares: FolderShareResponse[] = [];
+  try {
+    let cursor: string | undefined;
+    do {
+      const opts: any = { prefix: FOLDER_SHARE_PREFIX };
+      if (cursor) opts.cursor = cursor;
+      const list = await env.SHARES.list(opts);
+      for (const key of list.keys) {
+        const raw = await env.SHARES.get(key.name);
+        if (raw) {
+          const record: FolderShareRecord = JSON.parse(raw);
+          shares.push({
+            code: key.name.replace(FOLDER_SHARE_PREFIX, ''),
+            topicId: record.topicId,
+            folderId: record.folderId,
+            name: record.name,
+            fileCount: record.fileCount,
+            hasPassword: !!record.passwordHash,
+            expiresAt: record.expiresAt,
+            downloadCount: record.downloadCount || 0,
+            createdAt: record.createdAt,
+          });
+        }
+      }
+      cursor = (list as any).cursor;
+    } while (cursor);
+  } catch (err) {
+    console.error('listAllFolderShares error:', err);
+  }
+  shares.sort((a, b) => b.createdAt - a.createdAt);
+  return shares;
+}
+
+/**
+ * Update a folder share (password, expiry).
+ */
+export async function updateFolderShare(
+  env: Env,
+  code: string,
+  payload: FolderShareUpdatePayload,
+): Promise<{ ok: boolean; error?: string }> {
+  const raw = await env.SHARES.get(`${FOLDER_SHARE_PREFIX}${code}`);
+  if (!raw) {
+    return { ok: false, error: 'Folder share link not found' };
+  }
+
+  const record: FolderShareRecord = JSON.parse(raw);
+
+  if (payload.password !== undefined) {
+    if (payload.password) {
+      record.passwordHash = await sha256(payload.password);
+    } else {
+      record.passwordHash = null;
+    }
+  }
+
+  if (payload.expiresIn !== undefined) {
+    if (payload.expiresIn && payload.expiresIn > 0) {
+      record.expiresAt = Date.now() + payload.expiresIn * 1000;
+    } else {
+      record.expiresAt = null;
+    }
+  }
+
+  await env.SHARES.put(`${FOLDER_SHARE_PREFIX}${code}`, JSON.stringify(record));
+  return { ok: true };
+}
+
+/**
+ * Delete a folder share link.
+ */
+export async function deleteFolderShare(env: Env, code: string): Promise<boolean> {
+  const raw = await env.SHARES.get(`${FOLDER_SHARE_PREFIX}${code}`);
+  if (!raw) return false;
+  await env.SHARES.delete(`${FOLDER_SHARE_PREFIX}${code}`);
   return true;
 }
