@@ -1019,7 +1019,7 @@ function shareFolderPageHTML(p: { code: string; shareName: string; fileCount: nu
 *{box-sizing:border-box;margin:0}
 body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh;padding:2rem 1rem}
 .card{background:#1e293b;border-radius:12px;padding:2rem;max-width:720px;margin:0 auto}
-h1{color:#38bdf8;font-size:1.2rem;margin-bottom:0;word-break:break-all;display:flex;align-items:center;gap:.5rem}
+h1{color:#faff69;font-size:1.2rem;margin-bottom:0;word-break:break-all;display:flex;align-items:center;gap:.5rem}
 .meta{color:#94a3b8;font-size:.85rem;margin:.35rem 0 1rem}
 label{display:block;color:#94a3b8;font-size:.85rem;margin-bottom:.5rem;text-align:left}
 input[type=password]{width:100%;padding:.75rem;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:1rem;outline:none}
@@ -1036,9 +1036,9 @@ input[type=password]:focus{border-color:#38bdf8}
 .file-info{flex:1;min-width:0}
 .file-name{font-size:.875rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-size{font-size:.75rem;color:#94a3b8}
-.file-dl-btn{padding:.4rem .75rem;border-radius:6px;border:none;background:#38bdf8;color:#0f172a;cursor:pointer;font-size:.8rem;font-weight:600;text-decoration:none;flex-shrink:0}
-.gallery-link{display:inline-block;margin-top:1rem;padding:.5rem 1rem;border-radius:8px;background:linear-gradient(135deg,#38bdf8,#818cf8);color:#ffffff;text-decoration:none;font-size:.875rem;font-weight:600}
-.embed-section{background:#1e293b;border-radius:8px;padding:1rem;margin-top:1rem;border:1px solid #334155}
+.file-dl-btn{padding:.4rem .75rem;border-radius:6px;border:none;background:#faff69;color:#0f172a;cursor:pointer;font-size:.8rem;font-weight:600;text-decoration:none;flex-shrink:0}
+.gallery-link{display:inline-block;margin-top:1rem;padding:.5rem 1rem;border-radius:8px;background:#faff69;color:#0a0a0a;text-decoration:none;font-size:.875rem;font-weight:600}
+.embed-section{background:#242424;border-radius:8px;padding:1rem;margin-top:1rem;border:1px solid #334155}
 .embed-section h3{color:#94a3b8;font-size:.8rem;margin-bottom:.5rem;text-transform:uppercase}
 .embed-code{background:#0f172a;padding:.5rem;border-radius:4px;font-size:.75rem;font-family:monospace;color:#7dd3fc;word-break:break-all;user-select:all}
 </style>
@@ -1136,11 +1136,12 @@ function galleryPageHTML(p: { code: string; shareName: string; images: any[]; or
 *{box-sizing:border-box;margin:0}
 body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh}
 header{padding:1.5rem 2rem;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem}
-header h1{color:#38bdf8;font-size:1.2rem;display:flex;align-items:center;gap:.5rem}
+header h1{color:#faff69;font-size:1.2rem;display:flex;align-items:center;gap:.5rem}
 header .meta{color:#94a3b8;font-size:.85rem}
 header .links{display:flex;gap:.5rem}
 header .links a{padding:.4rem .8rem;border-radius:6px;text-decoration:none;font-size:.8rem;font-weight:600;background:#334155;color:#e2e8f0;transition:.15s}
 header .links a:hover{background:#475569}
+.gallery-link-btn{display:inline-block;margin-top:1rem;padding:.5rem 1rem;border-radius:8px;background:#faff69;color:#0a0a0a;text-decoration:none;font-size:.875rem;font-weight:600}
 .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.75rem;padding:1.5rem 2rem}
 .gallery-item{position:relative;border-radius:8px;overflow:hidden;background:#1e293b;cursor:pointer;aspect-ratio:1;transition:transform .15s,box-shadow .15s}
 .gallery-item:hover{transform:scale(1.02);box-shadow:0 8px 24px rgba(0,0,0,.4)}
@@ -1155,7 +1156,7 @@ header .links a:hover{background:#475569}
 #lightbox.show{display:flex}
 #lightbox img{max-width:95%;max-height:85vh;border-radius:8px;object-fit:contain}
 #lightbox .lb-info{color:#94a3b8;font-size:.85rem;margin-top:1rem;text-align:center}
-#lightbox .lb-info a{color:#38bdf8;text-decoration:none}
+#lightbox .lb-info a{color:#faff69;text-decoration:none}
 #lightbox .lb-nav{position:absolute;top:50%;transform:translateY(-50%);font-size:2.5rem;color:#94a3b8;cursor:pointer;padding:1rem;user-select:none;transition:color .15s}
 #lightbox .lb-nav:hover{color:#ffffff}
 #lightbox .lb-prev{left:1rem}
