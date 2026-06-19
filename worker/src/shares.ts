@@ -363,13 +363,13 @@ export async function createFolderShare(
   if (folderId != null && folderId !== undefined) {
     try {
       const folder = await env.DB.prepare('SELECT name FROM folders WHERE id = ?').bind(folderId).first<{ name: string }>();
-      record.name = folder?.name || `Folder ${folderId}`;
+      record.name = (folder?.name || '').trim() || `Folder ${folderId}`;
     } catch {
       record.name = `Folder ${folderId}`;
     }
   } else {
     const topic = await env.DB.prepare('SELECT name FROM topics WHERE topic_id = ?').bind(topicId).first<{ name: string }>();
-    record.name = topic?.name || `Topic ${topicId}`;
+    record.name = (topic?.name || '').trim() || `Topic ${topicId}`;
   }
 
   await env.SHARES.put(`${FOLDER_SHARE_PREFIX}${code}`, JSON.stringify(record));

@@ -552,15 +552,15 @@ function Dashboard() {
       // Convert folder shares to share-like objects for unified display
       const fileShares = (r.shares || []).map((s: any) => ({ ...s, _type: 'file' }));
       const folderItems = (fr.shares || []).map((fs: any) => ({
-        code: fs.code,
+        code: fs.code || '',
         fileId: 0,
-        fileName: fs.name,
-        fileSize: fs.fileCount,
-        hasPassword: fs.hasPassword,
-        expiresAt: fs.expiresAt,
+        fileName: fs.name || '(unnamed)',
+        fileSize: fs.fileCount || 0,
+        hasPassword: !!fs.hasPassword,
+        expiresAt: fs.expiresAt || null,
         downloadCount: fs.downloadCount || 0,
-        createdAt: fs.createdAt,
-        _type: 'folder', // mark as folder share
+        createdAt: fs.createdAt || 0,
+        _type: 'folder' as const,
       }));
       setShares([...fileShares, ...folderItems]);
       setFolderShares(fr.shares || []);
