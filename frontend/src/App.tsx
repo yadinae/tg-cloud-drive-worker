@@ -492,8 +492,10 @@ function Dashboard() {
 
   // Share management state
   const [shares, setShares] = useState<ShareLink[]>([]);
+  const [folderShares, setFolderShares] = useState<any[]>([]);
   const [sharesLoading, setSharesLoading] = useState(false);
   const [activeCategory, setActiveCategory] = useState<ShareCategory | 'all' | null>(null);
+  const [showFolderShares, setShowFolderShares] = useState(false);
   const [editShare, setEditShare] = useState<ShareLink | null>(null);
   const [editPassword, setEditPassword] = useState('');
   const [editRemovePassword, setEditRemovePassword] = useState(false);
@@ -543,8 +545,12 @@ function Dashboard() {
   const loadShares = useCallback(async () => {
     setSharesLoading(true);
     try {
-      const r = await fetchAllShares();
+      const [r, fr] = await Promise.all([
+        fetchAllShares(),
+        fetchAllFolderShares(),
+      ]);
       setShares(r.shares);
+      setFolderShares(fr.shares || []);
     } catch (e) { /* ignore */ }
     setSharesLoading(false);
   }, []);
@@ -1328,12 +1334,14 @@ function Dashboard() {
   // Reset file view when clicking share section
   const handleCategoryClick = (cat: typeof activeCategory) => {
     setActiveCategory(cat);
+    setShowFolderShares(false);
     setCurrentTopic(null);
     setFiles([]);
   };
 
   const handleTopicClick = (topic: Topic | null) => {
     setActiveCategory(null);
+    setShowFolderShares(false);
     setCurrentTopic(topic);
     setCurrentFolder(null);
     setFolderPath([]);
@@ -1427,6 +1435,11 @@ function Dashboard() {
                 {cat.icon} {cat.label} <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>({getCategoryCount(cat.key)})</span>
               </button>
             ))}
+            {/* Folder Shares */}
+            <button onClick={() => { setActiveCategory('all'); setShowFolderShares(true); setCurrentTopic(null); setFiles([]); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: '#transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem', marginTop: '.25rem', opacity: 0.8 }}>
+              📁 Folder Shares <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>({folderShares.length})</span>
+            </button>
           </div>
         </aside>
 
@@ -1567,6 +1580,56 @@ function Dashboard() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ─── Folder shares view ─── */}
+          {showFolderShares && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h2 style={{ margin: 0, fontSize: '1.125rem' }}>📁 Folder Shares</h2>
+                <span style={{ color: '#5a5a5a', fontSize: '.875rem' }}>{folderShares.length} shares</span>
+              </div>
+
+              {folderShares.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '4rem 0', color: '#5a5a5a' }}>
+                  <p style={{ fontSize: '3rem', marginBottom: '.5rem' }}>📁</p>
+                  <p>No folder shares yet</p>
+                  <p style={{ fontSize: '.875rem', marginTop: '.25rem', color: '#5a5a5a' }}>Click 🔗 on a folder to create one</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+                  {folderShares.map((fs: any) => {
+                    const expired = fs.expiresAt && Date.now() > fs.expiresAt;
+                    return (
+                      <div key={fs.code} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: '#1a1a1a', borderRadius: 8, gap: '1rem' }}>
+                        <span style={{ fontSize: '1.25rem' }}>📁</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#ffffff' }}>
+                            {fs.name}
+                            {expired && <span style={{ color: '#f87171', marginLeft: '.5rem', fontSize: '.75rem' }}>expired</span>}
+                          </div>
+                          <div style={{ fontSize: '.75rem', color: '#5a5a5a' }}>
+                            {fs.fileCount} files · /dl/f/{fs.code}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '.25rem', flexShrink: 0 }}>
+                          {fs.hasPassword && <span style={{ padding: '.35rem .5rem', borderRadius: 4, background: '#242424', color: '#faff69', fontSize: '.75rem' }}>🔒</span>}
+                          <button onClick={() => {
+                            const url = window.location.origin + '/dl/f/' + fs.code;
+                            navigator.clipboard.writeText(url);
+                          }} style={{ padding: '.35rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#faff69', cursor: 'pointer', fontSize: '.8rem' }}>Copy</button>
+                          <a href={'/dl/f/' + fs.code} target="_blank" style={{ padding: '.35rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#7dd3fc', cursor: 'pointer', fontSize: '.8rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Open</a>
+                          <button onClick={async () => {
+                            await deleteFolderShare(fs.code);
+                            loadShares();
+                          }} style={{ padding: '.35rem .6rem', borderRadius: 6, border: 'none', background: '#242424', color: '#f87171', cursor: 'pointer', fontSize: '.8rem' }}>Delete</button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </>

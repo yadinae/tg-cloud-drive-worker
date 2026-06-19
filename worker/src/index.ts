@@ -1085,35 +1085,32 @@ function showFiles(files, folderName){
   const wrap=document.getElementById('content-wrap');wrap.style.display='block';
   const list=document.getElementById('file-list');list.innerHTML='';
   const hasImages=files.some(f=>/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name));
-  if(hasImages)document.getElementById('gallery-link').style.display='inline-block';
+  if(hasImages){
+    document.getElementById('gallery-link').style.display='inline-block';
+    document.getElementById('embed-section').style.display='block';
+  }
   if(files.length===0){list.innerHTML='<div style="text-align:center;padding:2rem;color:#94a3b8">文件夹为空</div>';return}
   files.forEach(f=>{
-    const icon=f.name.match(/\\.(png|jpg|jpeg|gif|webp|bmp)$/i)?'🖼️':
-      f.name.match(/\\.(mp4|webm|mkv|mov)$/i)?'🎬':
-      f.name.match(/\\.(mp3|wav|flac)$/i)?'🎵':
-      f.name.match(/\\.(pdf)$/i)?'📕':
-      f.name.match(/\\.(zip|rar|7z|tar|gz)$/i)?'📦':
-      f.name.match(/\\.(js|ts|py|go|rs|java)$/i)?'💻':'📄';
+    const icon=f.name.match(/\.(png|jpg|jpeg|gif|webp|bmp)$/i)?'🖼️':
+      f.name.match(/\.(mp4|webm|mkv|mov)$/i)?'🎬':
+      f.name.match(/\.(mp3|wav|flac)$/i)?'🎵':
+      f.name.match(/\.(pdf)$/i)?'📕':
+      f.name.match(/\.(zip|rar|7z|tar|gz)$/i)?'📦':
+      f.name.match(/\.(js|ts|py|go|rs|java)$/i)?'💻':'📄';
     const sz=fmt(f.size);
     const isImg=/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name);
-    const item=document.createElement('div');item.className='file-list';
     const dlUrl='/dl/f/${p.code}/raw/'+f.id;
-    const imgUrl='/img/${p.code}/'+f.id;
-    item.innerHTML=\`
-      <a href="\${dlUrl}" class="file-item">
-        <span class="file-icon">\${icon}</span>
-        <span class="file-info">
-          <span class="file-name">\${esc(f.name)}</span>
-          <span class="file-size">\${sz}</span>
-        </span>
-        <span class="file-dl-btn">⬇ 下载</span>
-      </a>
-      \${isImg?'<div style="display:flex;align-items:center;gap:.5rem;padding:.25rem 0 0 2.5rem;font-size:.75rem;color:#94a3b8">🔗 直链: <code class="embed-code" style="font-size:.7rem;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent)">${p.origin}\${imgUrl}</code></div>':''}
-    \`.trim();
-    list.appendChild(item.firstElementChild);
-    if(isImg){const embed=list.appendChild(document.createElement('div'));embed.outerHTML=item.querySelector('div')?.outerHTML||'';}
+    const hotlink='${p.origin}/img/${p.code}/'+f.id;
+    const row=document.createElement('div');
+    row.style.marginBottom='.35rem';
+    row.innerHTML='<a href="'+dlUrl+'" class="file-item">'
+      +'<span class="file-icon">'+icon+'</span>'
+      +'<span class="file-info"><span class="file-name">'+esc(f.name)+'</span><span class="file-size">'+sz+'</span></span>'
+      +'<span class="file-dl-btn">⬇ 下载</span>'
+      +'</a>'
+      +(isImg?'<div style="display:flex;align-items:center;gap:.5rem;padding:.15rem 0 0 2.5rem;font-size:.75rem;color:#94a3b8">🔗 直链: <code class="embed-code" style="font-size:.7rem;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent)">'+hotlink+'</code></div>':'');
+    list.appendChild(row);
   });
-  if(hasImages)document.getElementById('embed-section').style.display='block';
 }
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
