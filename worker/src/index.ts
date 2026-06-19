@@ -124,7 +124,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id'],
   exposeHeaders: ['Content-Length', 'Content-Disposition', 'Accept-Ranges'],
 }));
 
@@ -592,6 +592,7 @@ app.delete('/api/shares/:code', async (c) => {
 
 // GET /api/shares/list-all — list ALL shares across all files
 app.get('/api/shares/list-all', async (c) => {
+  c.header('Cache-Control', 'no-store');
   const shares = await listAllShares(c.env);
   return c.json({ shares });
 });
@@ -619,6 +620,7 @@ app.post('/api/shares/folder', async (c) => {
 
 // GET /api/shares/folder/list-all — list ALL folder shares
 app.get('/api/shares/folder/list-all', async (c) => {
+  c.header('Cache-Control', 'no-store');
   const shares = await listAllFolderShares(c.env);
   return c.json({ shares });
 });
