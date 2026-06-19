@@ -128,8 +128,24 @@ app.use('*', cors({
   exposeHeaders: ['Content-Length', 'Content-Disposition', 'Accept-Ranges'],
 }));
 
-// ───── Auth middleware ─────
+// ───── Auth middleware (supports both session cookie and Bearer token) ─────
 async function authMiddleware(c: any, next: any) {
+  // 1. Check session (from X-Session-Id header or cookie)
+  const sessionId = c.req.header('X-Session-Id') || c.req.cookie?.session_id || c.req.query('session') || '';
+  if (sessionId) {
+    const raw = await c.env.SHARES.get(`sess:${sessionId}`, { type: 'json' }).catch(() => null);
+    if (raw && raw.createdAt && (!raw.expiresAt || Date.now() < raw.expiresAt)) {
+      // Session valid — renew if close to expiry
+      if (raw.expiresAt && raw.expiresAt - Date.now() < 86400000) {
+        raw.expiresAt = Date.now() + 7 * 86400000; // extend 7 days
+        await c.env.SHARES.put(`sess:${sessionId}`, JSON.stringify(raw), { expirationTtl: 604800 });
+      }
+      return await next();
+    }
+    // Session expired or invalid — fall through to token check
+  }
+
+  // 2. Fallback: Bearer token (backward compatible)
   let token = '';
   const authHeader = c.req.header('Authorization');
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -138,9 +154,9 @@ async function authMiddleware(c: any, next: any) {
     token = c.req.query('token') || '';
   }
   if (!token) {
-    return c.json({ error: 'Missing or invalid Authorization header' }, 401);
+    return c.json({ error: 'Authentication required' }, 401);
   }
-  // Timing-safe comparison (constant-time, immune to timing attacks)
+  // Timing-safe comparison
   const tokenBytes = new TextEncoder().encode(token);
   const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
   if (tokenBytes.length !== expectedBytes.length) {
@@ -162,14 +178,63 @@ app.get('/assets/*', (c) => {
   return c.html(FRONTEND_HTML);
 });
 
-// ───── Auth Verify (public — used by frontend login) ─────
-app.post('/api/auth/verify', async (c) => {
-  const authHeader = c.req.header('Authorization');
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token || token !== c.env.DRIVE_AUTH_TOKEN) {
-    return c.json({ error: 'Invalid token' }, 403);
+// ───── Session Login / Logout (public) ─────
+// POST /api/auth/login — password → session
+app.post('/api/auth/login', async (c) => {
+  const { password } = await c.req.json();
+  if (!password) return c.json({ error: 'Password required' }, 400);
+
+  // Verify password against DRIVE_AUTH_TOKEN
+  const tokenBytes = new TextEncoder().encode(password);
+  const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
+  let valid = false;
+  if (tokenBytes.length === expectedBytes.length) {
+    try {
+      valid = await crypto.subtle.timingSafeEqual(tokenBytes, expectedBytes);
+    } catch { /* ignore */ }
+  }
+
+  if (!valid) {
+    return c.json({ error: 'Invalid password' }, 403);
+  }
+
+  // Create session
+  const sessionId = crypto.randomUUID();
+  const now = Date.now();
+  const session = {
+    createdAt: now,
+    expiresAt: now + 7 * 86400000, // 7 days
+  };
+  await c.env.SHARES.put(`sess:${sessionId}`, JSON.stringify(session), { expirationTtl: 604800 });
+
+  return c.json({ ok: true, sessionId, expiresAt: session.expiresAt });
+});
+
+// POST /api/auth/logout — invalidate session
+app.post('/api/auth/logout', async (c) => {
+  const sessionId = c.req.header('X-Session-Id') || '';
+  if (sessionId) {
+    await c.env.SHARES.delete(`sess:${sessionId}`).catch(() => {});
   }
   return c.json({ ok: true });
+});
+
+// GET /api/auth/session — check if session is valid
+app.get('/api/auth/session', async (c) => {
+  const sessionId = c.req.query('session') || c.req.header('X-Session-Id') || '';
+  if (!sessionId) return c.json({ ok: false, error: 'No session' }, 401);
+  const raw = await c.env.SHARES.get(`sess:${sessionId}`).catch(() => null);
+  if (!raw) return c.json({ ok: false, error: 'Session expired or invalid' }, 401);
+  try {
+    const session = JSON.parse(raw);
+    if (session.expiresAt && Date.now() > session.expiresAt) {
+      await c.env.SHARES.delete(`sess:${sessionId}`).catch(() => {});
+      return c.json({ ok: false, error: 'Session expired' }, 401);
+    }
+    return c.json({ ok: true, createdAt: session.createdAt, expiresAt: session.expiresAt });
+  } catch {
+    return c.json({ ok: false, error: 'Invalid session' }, 401);
+  }
 });
 
 // ───── Health ─────

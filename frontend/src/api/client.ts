@@ -2,14 +2,17 @@
 const API_BASE = '';
 const CHUNK_THRESHOLD = 18 * 1024 * 1024; // 18MB — uploads > this get chunked client-side
 
-function getToken(): string | null {
-  return localStorage.getItem('tgcd_auth_token');
+function getSessionId(): string | null {
+  return localStorage.getItem('tgcd_session_id');
 }
 
 async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = getToken();
+  const sessionId = getSessionId();
   const h = { ...(opts.headers as Record<string, string>) } as Record<string, string>;
-  if (token) h['Authorization'] = `Bearer ${token}`;
+  if (sessionId) h['X-Session-Id'] = sessionId;
+  // Fallback: also send Bearer token if present (backward compat)
+  const token = localStorage.getItem('tgcd_auth_token');
+  if (token && !sessionId) h['Authorization'] = `Bearer ${token}`;
   if (!(opts.body instanceof FormData)) h['Content-Type'] = 'application/json';
 
   const res = await fetch(`${API_BASE}${path}`, { ...opts, headers: h });
@@ -22,16 +25,52 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
-export async function login(token: string): Promise<boolean> {
+export async function login(password: string): Promise<string | null> {
   try {
-    const r = await fetch(`${API_BASE}/api/auth/verify`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
     const data = await r.json();
-    if (data.ok) { localStorage.setItem('tgcd_auth_token', token); return true; }
-    return false;
-  } catch { return false; }
+    if (data.ok && data.sessionId) {
+      localStorage.setItem('tgcd_session_id', data.sessionId);
+      localStorage.removeItem('tgcd_auth_token'); // clean up old token
+      return data.sessionId;
+    }
+    return null;
+  } catch { return null; }
 }
-export function logout() { localStorage.removeItem('tgcd_auth_token'); }
-export function isAuthed(): boolean { return !!getToken(); }
+
+export async function logout() {
+  const sessionId = getSessionId();
+  if (sessionId) {
+    try {
+      await fetch(`${API_BASE}/api/auth/logout`, {
+        method: 'POST',
+        headers: { 'X-Session-Id': sessionId },
+      });
+    } catch { /* ignore */ }
+  }
+  localStorage.removeItem('tgcd_session_id');
+  localStorage.removeItem('tgcd_auth_token');
+}
+
+export async function isAuthed(): Promise<boolean> {
+  const sessionId = getSessionId();
+  if (!sessionId) {
+    // Fallback: check if old Bearer token exists
+    return !!localStorage.getItem('tgcd_auth_token');
+  }
+  try {
+    const r = await fetch(`${API_BASE}/api/auth/session?session=${sessionId}`);
+    const data = await r.json();
+    if (data.ok) return true;
+    // Session expired
+    localStorage.removeItem('tgcd_session_id');
+    return false;
+  } catch { return true; } // Optimistic — server might be down
+}
 
 export const fetchStats = () => req<{ fileCount: number; totalSize: number; topicCount: number }>('/api/stats');
 export const fetchTopics = () => req<{ topics: any[] }>('/api/topics');
@@ -46,12 +85,21 @@ export const fetchFiles = (topicId: number, folderId?: string) => {
 };
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
 
+// Get auth header value for XHR requests (session-based or token fallback)
+function getAuthHeader(): Record<string, string> {
+  const sessionId = localStorage.getItem('tgcd_session_id');
+  if (sessionId) return { 'X-Session-Id': sessionId };
+  const token = localStorage.getItem('tgcd_auth_token');
+  if (token) return { 'Authorization': `Bearer ${token}` };
+  return {};
+}
+
 /**
  * Upload a file to a topic. Files >18MB are split into chunks client-side.
  * Optionally upload into a specific folder.
  */
 export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void, folderId?: number | null): Promise<{ ok: boolean; fileId: number }> {
-  const token = getToken();
+  const authHeaders = getAuthHeader();
 
   // ─── Small files: single upload with XHR progress ───
   if (file.size <= CHUNK_THRESHOLD) {
@@ -61,7 +109,9 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
       if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${API_BASE}/api/files/upload`);
-      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      const sessionId = authHeaders['X-Session-Id'];
+      if (sessionId) xhr.setRequestHeader('X-Session-Id', sessionId);
+      else if (authHeaders['Authorization']) xhr.setRequestHeader('Authorization', authHeaders['Authorization']);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
       };
@@ -102,7 +152,9 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
         await new Promise<void>((resolveChunk, rejectChunk) => {
           const xhr = new XMLHttpRequest();
           xhr.open('POST', `${API_BASE}/api/files/upload-chunk`);
-          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          const sessionId = authHeaders['X-Session-Id'];
+          if (sessionId) xhr.setRequestHeader('X-Session-Id', sessionId);
+          else if (authHeaders['Authorization']) xhr.setRequestHeader('Authorization', authHeaders['Authorization']);
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable && onProgress) {
               const chunkPct = e.loaded / e.total;
@@ -135,7 +187,7 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
       try {
         await fetch(`${API_BASE}/api/files/cleanup-upload`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          headers: { 'Content-Type': 'application/json', ...(authHeaders['X-Session-Id'] ? { 'X-Session-Id': authHeaders['X-Session-Id'] } : authHeaders['Authorization'] ? { 'Authorization': authHeaders['Authorization'] } : {}) },
           body: JSON.stringify({ uploadId }),
         });
       } catch { /* cleanup is best-effort */ }
@@ -150,9 +202,11 @@ export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/a
 export const deleteFile = (id: number) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' });
 
 export const getDlUrl = (id: number) => {
-  const token = getToken();
-  const qs = token ? `?token=${token}` : '';
-  return `/api/files/${id}/download${qs}`;
+  const sessionId = localStorage.getItem('tgcd_session_id');
+  if (sessionId) return `/api/files/${id}/download?session=${sessionId}`;
+  const token = localStorage.getItem('tgcd_auth_token');
+  if (token) return `/api/files/${id}/download?token=${token}`;
+  return `/api/files/${id}/download`;
 };
 export const getDownloadUrl = (id: number) => {
   return `/api/files/${id}/download?dl=1`;
@@ -169,9 +223,9 @@ export async function downloadFile(
   fileName: string,
   onProgress?: (pct: number) => void,
 ): Promise<void> {
-  const token = getToken();
+  const authHeaders = getAuthHeader();
   const res = await fetch(`${API_BASE}/api/files/${id}/download?dl=1`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: authHeaders,
     redirect: 'manual', // don't follow 302 — handle ourselves
   });
 

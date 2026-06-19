@@ -18,36 +18,151 @@ function formatBytes(b: number): string {
   return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-// ─── Login ───
+// ─── Login (MCP Gateway style) ───
 function Login({ onLogin }: { onLogin: () => void }) {
-  const [token, setToken] = useState('');
+  const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true); setErr('');
-    const ok = await login(token);
+    const sessionId = await login(password);
     setLoading(false);
-    if (ok) onLogin();
-    else setErr('Invalid auth token');
+    if (sessionId) onLogin();
+    else setErr('密码错误，请重试');
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a', color: '#ffffff', fontFamily: s.font }}>
-      <form onSubmit={handleSubmit} style={{ background: '#1a1a1a', padding: '2rem', borderRadius: 12, width: '100%', maxWidth: 380 }}>
-        <h1 style={{ margin: '0 0 .5rem', color: '#faff69', fontSize: '1.5rem' }}>☁️ TG Cloud Drive</h1>
-        <p style={{ color: '#888888', margin: '0 0 1.5rem', fontSize: '.875rem' }}>Enter your access token to continue</p>
-        <input
-          type="password" placeholder="Access Token" value={token}
-          onChange={e => setToken(e.target.value)}
-          style={{ width: '100%', padding: '.75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '1rem', outline: 'none', boxSizing: 'border-box' }}
-        />
-        {err && <p style={{ color: '#f87171', fontSize: '.875rem', marginTop: '.5rem' }}>{err}</p>}
-        <button type="submit" disabled={loading || !token.trim()} style={{ width: '100%', marginTop: '1rem', padding: '.75rem', borderRadius: 8, border: 'none', background: '#faff69', color: '#0a0a0a', fontSize: '1rem', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? .7 : 1 }}>
-          {loading ? 'Verifying...' : 'Sign In'}
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'radial-gradient(ellipse at 50% 30%, #0f172a 0%, #020617 100%)',
+      fontFamily: s.font,
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+      {/* Decorative elements */}
+      <div style={{
+        position: 'absolute', top: '-20%', left: '-10%', width: '60%', height: '60%',
+        background: 'radial-gradient(circle, rgba(56,189,248,.08) 0%, transparent 70%)',
+        pointerEvents: 'none',
+      }} />
+      <div style={{
+        position: 'absolute', bottom: '-20%', right: '-10%', width: '60%', height: '60%',
+        background: 'radial-gradient(circle, rgba(250,255,105,.05) 0%, transparent 70%)',
+        pointerEvents: 'none',
+      }} />
+
+      <form onSubmit={handleSubmit} style={{
+        background: 'rgba(30,41,59,.6)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        border: '1px solid rgba(51,65,85,.5)',
+        padding: '2.5rem',
+        borderRadius: 16,
+        width: '100%',
+        maxWidth: 360,
+        position: 'relative',
+        boxShadow: '0 25px 50px -12px rgba(0,0,0,.5)',
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+          <div style={{
+            width: 56, height: 56, borderRadius: 14,
+            background: 'linear-gradient(135deg, #38bdf8, #818cf8)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '1.5rem', margin: '0 auto 1rem',
+          }}>☁️</div>
+          <h1 style={{ margin: 0, color: '#ffffff', fontSize: '1.25rem', fontWeight: 600, letterSpacing: '-.02em' }}>
+            TG Cloud Drive
+          </h1>
+          <p style={{ color: '#64748b', margin: '.35rem 0 0', fontSize: '.85rem' }}>
+            输入密码登录你的云盘
+          </p>
+        </div>
+
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', color: '#94a3b8', fontSize: '.8rem', marginBottom: '.4rem', fontWeight: 500 }}>
+            密码
+          </label>
+          <input
+            ref={inputRef}
+            type="password"
+            placeholder="Enter your password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            disabled={loading}
+            style={{
+              width: '100%', padding: '.7rem .85rem',
+              borderRadius: 10,
+              border: err ? '1px solid #f87171' : '1px solid #334155',
+              background: '#0f172a',
+              color: '#ffffff',
+              fontSize: '.95rem',
+              outline: 'none',
+              boxSizing: 'border-box',
+              transition: 'border-color .15s',
+            }}
+            onFocus={e => { e.target.style.borderColor = '#38bdf8'; }}
+            onBlur={e => { if (!err) e.target.style.borderColor = '#334155'; }}
+          />
+          {err && (
+            <p style={{
+              color: '#f87171', fontSize: '.8rem', marginTop: '.4rem',
+              display: 'flex', alignItems: 'center', gap: '.3rem',
+            }}>
+              <span>⚠️</span> {err}
+            </p>
+          )}
+        </div>
+
+        <button
+          type="submit"
+          disabled={loading || !password.trim()}
+          style={{
+            width: '100%', padding: '.75rem',
+            borderRadius: 10, border: 'none',
+            background: loading ? '#334155' : 'linear-gradient(135deg, #38bdf8, #818cf8)',
+            color: '#ffffff',
+            fontSize: '.95rem',
+            fontWeight: 600,
+            cursor: loading ? 'not-allowed' : 'pointer',
+            opacity: loading ? .6 : 1,
+            transition: 'all .15s',
+            position: 'relative',
+          }}
+        >
+          {loading ? (
+            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.5rem' }}>
+              <span style={{
+                width: 16, height: 16, borderRadius: '50%',
+                border: '2px solid rgba(255,255,255,.3)',
+                borderTopColor: '#ffffff',
+                animation: 'spin .6s linear infinite',
+                display: 'inline-block',
+              }} />
+              登录中...
+            </span>
+          ) : '登录'}
         </button>
+
+        <p style={{
+          textAlign: 'center', color: '#475569', fontSize: '.75rem',
+          marginTop: '1.5rem', lineHeight: 1.5,
+        }}>
+          数据存储在 Telegram 频道中<br />
+          由 Cloudflare Workers 提供支持
+        </p>
       </form>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }
@@ -1756,7 +1871,33 @@ function Dashboard() {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(isAuthed());
+  const [authed, setAuthed] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    isAuthed().then(setAuthed);
+  }, []);
+
+  if (authed === null) {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'radial-gradient(ellipse at 50% 30%, #0f172a 0%, #020617 100%)',
+        fontFamily: 'system-ui, sans-serif',
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: '50%',
+            border: '3px solid rgba(56,189,248,.2)', borderTopColor: '#38bdf8',
+            animation: 'spin .8s linear infinite',
+            margin: '0 auto .75rem',
+          }} />
+          <p style={{ color: '#64748b', fontSize: '.875rem' }}>验证登录状态...</p>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      </div>
+    );
+  }
+
   if (!authed) return <Login onLogin={() => setAuthed(true)} />;
   return <Dashboard />;
 }
