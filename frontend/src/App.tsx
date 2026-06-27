@@ -747,10 +747,26 @@ function Dashboard() {
 
   // ─── File Move ───
   const [moveFile, setMoveFile] = useState<DriveFile | null>(null);
+  const [moveFileCount, setMoveFileCount] = useState(0);
   const [moveTargetFolder, setMoveTargetFolder] = useState<number | null>(null);
   const [moveTargetFolders, setMoveTargetFolders] = useState<Folder[]>([]);
   const [moveTopicId, setMoveTopicId] = useState<number | null>(null);
   const [moveTopics, setMoveTopics] = useState<Topic[]>([]);
+
+  // ─── Batch Selection ───
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<number>>(new Set());
+
+  const toggleFileSelect = (id: number) => {
+    setSelectedFileIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectAllFiles = () => {
+    if (selectedFileIds.size === files.length) setSelectedFileIds(new Set());
+    else setSelectedFileIds(new Set(files.map(f => f.id)));
+  };
 
   const handleOpenMove = async (f: DriveFile) => {
     setMoveFile(f);
@@ -807,6 +823,93 @@ function Dashboard() {
       alert('Move failed: ' + err.message);
     }
   };
+
+  const handleBatchMoveOpen = async () => {
+    if (selectedFileIds.size === 0) return;
+    setMoveFileCount(selectedFileIds.size);
+    setMoveTopicId(currentTopic?.topicId ?? null);
+    setMoveTargetFolder(currentFolder);
+    setMoveTargetFolders([]);
+    setMoveTopics([]);
+    try {
+      const t = await fetchTopics();
+      setMoveTopics(t.topics || []);
+      if (currentTopic) {
+        const r = await fetchFolders(currentTopic.topicId);
+        setMoveTargetFolders(r.folders || []);
+      }
+    } catch {}
+  };
+
+  const handleBatchMoveConfirm = async () => {
+    if (moveTopicId === null || selectedFileIds.size === 0) return;
+    const ids = Array.from(selectedFileIds);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const sessionId = localStorage.getItem('tgcd_session_id');
+    if (sessionId) headers['X-Session-Id'] = sessionId;
+    else {
+      const token = localStorage.getItem('tgcd_auth_token');
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+    }
+    let moved = 0, failed = 0;
+    for (const id of ids) {
+      try {
+        const res = await fetch('/api/files/' + id + '/move', {
+          method: 'PUT', headers,
+          body: JSON.stringify({ topicId: moveTopicId, folderId: moveTargetFolder }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Move failed');
+        moved++;
+      } catch (e: any) {
+        failed++;
+        console.error('Move file ' + id + ' failed:', e.message);
+      }
+    }
+    setMoveFileCount(0);
+    setSelectedFileIds(new Set());
+    if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
+    await loadTopics();
+    if (failed > 0) alert('Moved ' + moved + ' files, ' + failed + ' failed');
+  };
+
+  // ─── Gallery state ───
+  const [galleryFiles, setGalleryFiles] = useState<DriveFile[]>([]);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+
+  const handleBatchDownload = useCallback(() => {
+    const selected = files.filter(f => selectedFileIds.has(f.id));
+    if (selected.length === 0) return;
+    downloadFiles(selected, (idx, total, name, pct) => {
+      setDownloadProgress({ active: true, fileName: name, pct, batch: { current: idx, total } });
+    }).finally(() => {
+      setDownloadProgress({ active: false, pct: 0 });
+    });
+  }, [files, selectedFileIds]);
+
+  const handleBatchDelete = async () => {
+    const selected = files.filter(f => selectedFileIds.has(f.id));
+    if (selected.length === 0) return;
+    if (!confirm(`Delete ${selected.length} file(s)? This cannot be undone.`)) return;
+    let deleted = 0, failed = 0;
+    for (const f of selected) {
+      try {
+        await deleteFile(f.id);
+        deleted++;
+      } catch { failed++; }
+    }
+    setSelectedFileIds(new Set());
+    if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
+    await loadTopics();
+    if (failed > 0) alert('Deleted ' + deleted + ' files, ' + failed + ' failed');
+  };
+
+  const handleBatchGallery = () => {
+    const selected = files.filter(f => selectedFileIds.has(f.id) && (f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name)));
+    if (selected.length === 0) return;
+    setGalleryFiles(selected);
+    setGalleryIndex(0);
+  };
+
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     const r = await searchFiles(searchQuery);
@@ -1318,6 +1421,66 @@ function Dashboard() {
     );
   }
 
+  // ─── Gallery Modal (image slideshow for batch preview) ───
+  function GalleryModal({ files, initialIndex, onClose }: { files: DriveFile[]; initialIndex: number; onClose: () => void }) {
+    const [idx, setIdx] = useState(initialIndex);
+    const imgRef = useRef<HTMLImageElement>(null);
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+
+    const prev = useCallback(() => setIdx(i => (i > 0 ? i - 1 : files.length - 1)), [files.length]);
+    const next = useCallback(() => setIdx(i => (i < files.length - 1 ? i + 1 : 0)), [files.length]);
+
+    useEffect(() => {
+      const handler = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') onCloseRef.current();
+        else if (e.key === 'ArrowLeft') prev();
+        else if (e.key === 'ArrowRight') next();
+      };
+      window.addEventListener('keydown', handler);
+      return () => window.removeEventListener('keydown', handler);
+    }, [prev, next]); // stable ref — only re-binds when prev/next change (never, with useCallback)
+
+    const file = files[idx];
+    const dlUrl = file ? getDlUrl(file.id) : '';
+
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.92)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }} onClick={onClose}>
+        {/* Top bar */}
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '.75rem 1rem', zIndex: 2 }}>
+          <span style={{ color: '#ffffff', fontSize: '.875rem' }}>
+            🖼 {idx + 1} / {files.length} — <strong style={{ color: '#faff69' }}>{file?.name || ''}</strong>
+          </span>
+          <button onClick={onClose} style={{ background: 'rgba(255,255,255,.1)', border: 'none', color: '#ffffff', fontSize: '1.25rem', cursor: 'pointer', padding: '.35rem .6rem', borderRadius: 6, lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Prev arrow */}
+        {files.length > 1 && (
+          <button onClick={(e) => { e.stopPropagation(); prev(); }}
+            style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', zIndex: 2, background: 'rgba(0,0,0,.4)', border: 'none', color: '#ffffff', fontSize: '2rem', cursor: 'pointer', padding: '.5rem .75rem', borderRadius: 8, lineHeight: 1 }}>
+            ‹
+          </button>
+        )}
+
+        {/* Image */}
+        {file && (
+          <img ref={imgRef} src={dlUrl} alt={file.name}
+            onClick={e => e.stopPropagation()}
+            style={{ maxWidth: '92%', maxHeight: '88vh', borderRadius: 4, objectFit: 'contain', cursor: 'pointer' }}
+            onDoubleClick={() => window.open(dlUrl, '_blank')} />
+        )}
+
+        {/* Next arrow */}
+        {files.length > 1 && (
+          <button onClick={(e) => { e.stopPropagation(); next(); }}
+            style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', zIndex: 2, background: 'rgba(0,0,0,.4)', border: 'none', color: '#ffffff', fontSize: '2rem', cursor: 'pointer', padding: '.5rem .75rem', borderRadius: 8, lineHeight: 1 }}>
+            ›
+          </button>
+        )}
+      </div>
+    );
+  }
+
   // ─── Share handlers ───
   const getShareUrl = (share: any) => {
     return window.location.origin + (share._type === 'folder' ? '/dl/f/' : '/dl/') + share.code;
@@ -1639,6 +1802,22 @@ function Dashboard() {
               </div>
               {transferError && <div style={{ color: '#f87171', fontSize: '.8rem', marginBottom: '1rem', padding: '.5rem .75rem', background: '#1a1a1a', borderRadius: 6, border: '1px solid rgba(248,113,113,.3)' }}>❌ {transferError}</div>}
 
+              {/* ─── Batch selection toolbar ─── */}
+              {selectedFileIds.size > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '1rem', padding: '.65rem 1rem', background: '#242424', borderRadius: 8, border: '1px solid #2a2a2a', flexWrap: 'wrap' }}>
+                  <input type="checkbox" checked={selectedFileIds.size === files.length} onChange={selectAllFiles}
+                    style={{ accentColor: '#faff69', width: 16, height: 16, cursor: 'pointer' }} />
+                  <span style={{ color: '#faff69', fontSize: '.875rem', fontWeight: 600, marginRight: '.25rem' }}>{selectedFileIds.size} / {files.length}</span>
+                  <button onClick={handleBatchDownload} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#ffffff', color: '#0a0a0a', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>⬇ Download</button>
+                  <button onClick={handleBatchMoveOpen} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#7dd3fc', color: '#0a0a0a', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>📂 Move</button>
+                  <button onClick={handleBatchDelete} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#f87171', color: '#ffffff', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>🗑 Delete</button>
+                  {files.some(f => selectedFileIds.has(f.id) && (f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name))) && (
+                    <button onClick={handleBatchGallery} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#faff69', color: '#0a0a0a', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>🖼 Gallery</button>
+                  )}
+                  <button onClick={() => setSelectedFileIds(new Set())} style={{ marginLeft: 'auto', padding: '.3rem .5rem', borderRadius: 4, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
+                </div>
+              )}
+
               {files.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '4rem 0', color: '#5a5a5a' }}>
                   <p style={{ fontSize: '1.125rem' }}>This topic is empty</p>
@@ -1647,7 +1826,9 @@ function Dashboard() {
               ) : (
                 <div style={{ display: 'grid', gap: '.5rem' }}>
                   {files.map(f => (
-                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: '#1a1a1a', borderRadius: 8, gap: '1rem' }}>
+                    <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: '.75rem 1rem', background: selectedFileIds.has(f.id) ? '#242424' : '#1a1a1a', borderRadius: 8, gap: '.75rem', cursor: 'default', border: selectedFileIds.has(f.id) ? '1px solid #faff69' : 'none' }}>
+                      <input type="checkbox" checked={selectedFileIds.has(f.id)} onChange={() => toggleFileSelect(f.id)}
+                        style={{ accentColor: '#faff69', width: 16, height: 16, cursor: 'pointer', flexShrink: 0 }} />
                       <span style={{ fontSize: '1.25rem' }}>{fileIcon(f.name)}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <p style={{ margin: 0, fontSize: '.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</p>
@@ -1987,6 +2168,11 @@ function Dashboard() {
         <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
       )}
 
+      {/* Gallery Modal (batch image preview) */}
+      {galleryFiles.length > 0 && (
+        <GalleryModal files={galleryFiles} initialIndex={galleryIndex} onClose={() => setGalleryFiles([])} />
+      )}
+
       {/* Download Progress */}
       {downloadProgress.active && (
         <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 1000, background: '#242424', borderRadius: 12, padding: '1rem 1.5rem', minWidth: 280, boxShadow: '0 8px 32px rgba(0,0,0,.5)', border: '1px solid #2a2a2a' }}>
@@ -2051,16 +2237,18 @@ function Dashboard() {
       )}
 
       {/* ─── Move File Modal ─── */}
-      {moveFile && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setMoveFile(null)}>
+      {(moveFile || moveFileCount > 0) && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => { setMoveFile(null); setMoveFileCount(0); }}>
           <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 440 }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#ffffff' }}>📂 Move File</h3>
-              <button onClick={() => setMoveFile(null)} style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#ffffff' }}>{moveFileCount > 0 ? `📂 Move ${moveFileCount} files` : '📂 Move File'}</h3>
+              <button onClick={() => { setMoveFile(null); setMoveFileCount(0); }} style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
             </div>
-            <p style={{ fontSize: '.875rem', color: '#888888', marginBottom: '1rem' }}>
-              <strong style={{ color: '#ffffff' }}>{moveFile.name}</strong>
-            </p>
+            {moveFile && (
+              <p style={{ fontSize: '.875rem', color: '#888888', marginBottom: '1rem' }}>
+                <strong style={{ color: '#ffffff' }}>{moveFile.name}</strong>
+              </p>
+            )}
             {/* Topic selector */}
             <div style={{ marginBottom: '.75rem' }}>
               <label style={{ display: 'block', fontSize: '.875rem', color: '#888888', marginBottom: '.5rem' }}>Target topic:</label>
@@ -2093,8 +2281,8 @@ function Dashboard() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end' }}>
-              <button onClick={() => setMoveFile(null)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #2a2a2a', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
-              <button onClick={handleConfirmMove} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>Move</button>
+              <button onClick={() => { setMoveFile(null); setMoveFileCount(0); }} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #2a2a2a', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={moveFileCount > 0 ? handleBatchMoveConfirm : handleConfirmMove} style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem' }}>{moveFileCount > 0 ? `Move ${moveFileCount} files` : 'Move'}</button>
             </div>
           </div>
         </div>
