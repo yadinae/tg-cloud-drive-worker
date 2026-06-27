@@ -542,7 +542,10 @@ function Dashboard() {
     try {
       const r = await fetchConfig();
       setSettings(r.settings);
-    } catch { /* settings already has defaults */ }
+      setSettingsMessage(null);
+    } catch (e: any) {
+      setSettingsMessage({ type: 'error', text: '加载设置失败: ' + (e.message || '网络错误') });
+    }
   }, []);
 
   const loadTopics = useCallback(async () => {
@@ -1943,9 +1946,9 @@ function Dashboard() {
                   style={{ padding: '.65rem 1.5rem', borderRadius: 8, border: 'none', background: settingsSaving ? '#334155' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: settingsSaving ? 'not-allowed' : 'pointer', fontSize: '.9rem', transition: '150ms ease' }}>
                   {settingsSaving ? '💾 Saving...' : '💾 Save Settings'}
                 </button>
-                <button onClick={() => { setSettingsMessage(null); }}
+                <button onClick={() => { setSettingsMessage(null); loadSettings(); }}
                   style={{ padding: '.65rem 1.5rem', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.9rem' }}>
-                  ↻ Reset
+                  ↻ Revert
                 </button>
               </div>
 
