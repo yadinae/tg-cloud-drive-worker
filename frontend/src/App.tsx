@@ -4,6 +4,8 @@ import { c, s, st } from './design-tokens';
 
 type View = 'login' | 'drive';
 
+const PAGE_SIZE = 50;
+
 type ShareCategory = 'active' | 'expiring' | 'expired';
 
 interface Topic { topicId: number; name: string; fileCount: number; createdAt: number; }
@@ -526,6 +528,11 @@ function Dashboard() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const showAudioPlayer = audioIndex >= 0 && audioQueue.length > 0;
 
+  // ─── Pagination ───
+  const [page, setPage] = useState(1);
+  const [totalFiles, setTotalFiles] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(totalFiles / PAGE_SIZE));
+
   // ─── Settings / Config state ───
   const [activeView, setActiveView] = useState<'topics' | 'settings'>('topics');
   const [settings, setSettings] = useState<Record<string, string>>({});
@@ -553,11 +560,13 @@ function Dashboard() {
     setTopics(r.topics);
   }, []);
 
-  const loadFiles = useCallback(async (topicId: number, folderId?: undefined | number | null) => {
+  const loadFiles = useCallback(async (topicId: number, folderId?: undefined | number | null, targetPage?: number) => {
     const folderParam = folderId === undefined ? undefined : (folderId === null ? '' : String(folderId));
-    const r = await fetchFiles(topicId, folderParam);
+    const pg = targetPage ?? page;
+    const r = await fetchFiles(topicId, folderParam, pg, PAGE_SIZE);
     setFiles(r.files);
-  }, []);
+    setTotalFiles(r.total);
+  }, [page]);
 
   const loadStats = useCallback(async () => {
     const r = await fetchStats();
@@ -933,7 +942,8 @@ function Dashboard() {
     setCurrentFolder(folder.id);
     if (folder.parentId === null) setFolderPath([{ id: folder.id, name: folder.name }]);
     else { try { const r = await fetchFolderPath(folder.id); setFolderPath(r.path); } catch { setFolderPath([{ id: folder.id, name: folder.name }]); } }
-    await Promise.all([loadFiles(folder.topicId, folder.id), loadFolders(folder.topicId, folder.id)]);
+    setPage(1);
+    await Promise.all([loadFiles(folder.topicId, folder.id, 1), loadFolders(folder.topicId, folder.id)]);
   };
 
   const handleCreateFolder = async () => {
@@ -954,7 +964,8 @@ function Dashboard() {
     if (!currentTopic) return;
     if (folderId === null) { setCurrentFolder(null); setFolderPath([]); }
     else { setCurrentFolder(folderId); setFolderPath(folderPath.slice(0, idx + 1)); }
-    await Promise.all([loadFiles(currentTopic.topicId, folderId), loadFolders(currentTopic.topicId, folderId)]);
+    setPage(1);
+    await Promise.all([loadFiles(currentTopic.topicId, folderId, 1), loadFolders(currentTopic.topicId, folderId)]);
   };
 
   const handleTransfer = async () => {
@@ -1575,6 +1586,7 @@ function Dashboard() {
     setCurrentTopic(topic);
     setCurrentFolder(null);
     setFolderPath([]);
+    setPage(1);
     if (topic) { loadFiles(topic.topicId, null); loadFolders(topic.topicId, null); }
     else setFiles([]);
   };
@@ -1879,6 +1891,28 @@ function Dashboard() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* Pagination */}
+              {!activeCategory && currentTopic && files.length > 0 && totalPages > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.5rem', marginTop: '1.25rem', padding: '.65rem 0', fontSize: '.875rem' }}>
+                  <button onClick={() => { setPage(1); loadFiles(currentTopic.topicId, currentFolder, 1); }}
+                    disabled={page <= 1}
+                    style={{ padding: '.4rem .65rem', borderRadius: 5, border: '1px solid #334155', background: page <= 1 ? '#1a1a1a' : '#242424', color: page <= 1 ? '#555' : '#cccccc', cursor: page <= 1 ? 'not-allowed' : 'pointer', fontSize: '.8rem' }}>⏪</button>
+                  <button onClick={() => { const p = page - 1; setPage(p); loadFiles(currentTopic.topicId, currentFolder, p); }}
+                    disabled={page <= 1}
+                    style={{ padding: '.4rem .65rem', borderRadius: 5, border: '1px solid #334155', background: page <= 1 ? '#1a1a1a' : '#242424', color: page <= 1 ? '#555' : '#cccccc', cursor: page <= 1 ? 'not-allowed' : 'pointer', fontSize: '.8rem' }}>‹ Prev</button>
+                  <span style={{ color: '#888888', fontSize: '.85rem', margin: '0 .25rem' }}>
+                    Page <strong style={{ color: '#faff69' }}>{page}</strong> / {totalPages}
+                    <span style={{ color: '#5a5a5a', marginLeft: '.5rem' }}>({totalFiles} files)</span>
+                  </span>
+                  <button onClick={() => { const p = page + 1; setPage(p); loadFiles(currentTopic.topicId, currentFolder, p); }}
+                    disabled={page >= totalPages}
+                    style={{ padding: '.4rem .65rem', borderRadius: 5, border: '1px solid #334155', background: page >= totalPages ? '#1a1a1a' : '#242424', color: page >= totalPages ? '#555' : '#cccccc', cursor: page >= totalPages ? 'not-allowed' : 'pointer', fontSize: '.8rem' }}>Next ›</button>
+                  <button onClick={() => { setPage(totalPages); loadFiles(currentTopic.topicId, currentFolder, totalPages); }}
+                    disabled={page >= totalPages}
+                    style={{ padding: '.4rem .65rem', borderRadius: 5, border: '1px solid #334155', background: page >= totalPages ? '#1a1a1a' : '#242424', color: page >= totalPages ? '#555' : '#cccccc', cursor: page >= totalPages ? 'not-allowed' : 'pointer', fontSize: '.8rem' }}>⏩</button>
                 </div>
               )}
             </>

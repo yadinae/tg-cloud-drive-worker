@@ -78,10 +78,11 @@ export const createTopic = (name: string) => req<{ ok: boolean; topic: any }>('/
 export const renameTopic = (topicId: number, name: string) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'PUT', body: JSON.stringify({ name }) });
 export const deleteTopic = (topicId: number) => req<{ ok: boolean }>(`/api/topics/${topicId}`, { method: 'DELETE' });
 
-export const fetchFiles = (topicId: number, folderId?: string) => {
+export const fetchFiles = (topicId: number, folderId?: string, page?: number, pageSize?: number) => {
   let path = `/api/files?topicId=${topicId}`;
   if (folderId !== undefined) path += `&folderId=${folderId}`;
-  return req<{ files: any[] }>(path);
+  if (page !== undefined) path += `&page=${page}&pageSize=${pageSize || 50}`;
+  return req<{ files: any[]; total: number; page: number; pageSize: number }>(path);
 };
 export const searchFiles = (q: string) => req<{ files: any[] }>(`/api/files?q=${encodeURIComponent(q)}`);
 

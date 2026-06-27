@@ -74,6 +74,40 @@ export async function listFiles(env: Env, topicId: number, folderId: number | nu
   }));
 }
 
+export async function listFilesPaginated(
+  env: Env, topicId: number, folderId: number | null, page: number, pageSize: number
+): Promise<{ files: FileResponse[]; total: number; page: number; pageSize: number }> {
+  const offset = (page - 1) * pageSize;
+  let rows;
+  let countResult: { count: number } | null;
+  if (folderId === null) {
+    [countResult, rows] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) as count FROM files WHERE topic_id = ? AND folder_id IS NULL").bind(topicId).first<{count: number}>(),
+      env.DB.prepare("SELECT * FROM files WHERE topic_id = ? AND folder_id IS NULL ORDER BY name LIMIT ? OFFSET ?").bind(topicId, pageSize, offset).all<FileRow>(),
+    ]);
+  } else {
+    [countResult, rows] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) as count FROM files WHERE topic_id = ? AND folder_id = ?").bind(topicId, folderId).first<{count: number}>(),
+      env.DB.prepare("SELECT * FROM files WHERE topic_id = ? AND folder_id = ? ORDER BY name LIMIT ? OFFSET ?").bind(topicId, folderId, pageSize, offset).all<FileRow>(),
+    ]);
+  }
+  return {
+    files: rows.results.map(r => ({
+      id: r.id,
+      topicId: r.topic_id,
+      folderId: r.folder_id,
+      name: r.name,
+      size: r.size,
+      mimeType: r.mime_type,
+      chunkCount: r.chunk_count,
+      createdAt: r.created_at,
+    })),
+    total: countResult?.count || 0,
+    page,
+    pageSize,
+  };
+}
+
 export async function getFile(env: Env, fileId: number): Promise<FileRow | null> {
   return env.DB.prepare(
     'SELECT * FROM files WHERE id = ?'

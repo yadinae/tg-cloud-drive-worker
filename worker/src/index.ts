@@ -6,7 +6,7 @@ import {
   createTopic as createTopicMeta,
   renameTopic,
   deleteTopic,
-  listFiles,
+  listFiles, listFilesPaginated,
   getFile,
   renameFile,
   moveFile,
@@ -537,8 +537,11 @@ app.get('/api/files', async (c) => {
     return c.json({ error: 'topicId query parameter required' }, 400);
   }
   const folderId = c.req.query('folderId') ? Number(c.req.query('folderId')) : null;
-  const files = await listFiles(c.env, Number(topicId), folderId);
-  return c.json({ files });
+  // Pagination (default: page=1, pageSize=200 = max per-page)
+  const page = Math.max(1, Number(c.req.query('page')) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(c.req.query('pageSize')) || 50));
+  const result = await listFilesPaginated(c.env, Number(topicId), folderId, page, pageSize);
+  return c.json(result);
 });
 
 // POST /api/files/upload — upload file to a topic
