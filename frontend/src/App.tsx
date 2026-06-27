@@ -1587,7 +1587,7 @@ function Dashboard() {
     setCurrentFolder(null);
     setFolderPath([]);
     setPage(1);
-    if (topic) { loadFiles(topic.topicId, null); loadFolders(topic.topicId, null); }
+    if (topic) { loadFiles(topic.topicId, null, 1); loadFolders(topic.topicId, null); }
     else setFiles([]);
   };
 
