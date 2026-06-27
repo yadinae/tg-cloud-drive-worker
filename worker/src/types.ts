@@ -14,6 +14,10 @@ export interface Env {
   /** Optional: max concurrent Bot API calls per instance (default: 2).
    *  Helps prevent 429 rate limits under heavy upload concurrency. */
   TG_API_CONCURRENCY?: string;  // parsed as number, default 2
+  /** Optional: CF API Token with workers:secret:edit scope, for password change via UI. */
+  CF_API_TOKEN_FOR_SECRET?: string;
+  /** Required for password change: Cloudflare Account ID. */
+  CF_ACCOUNT_ID?: string;
 }
 
 // ───── D1 Row Types ─────
@@ -109,6 +113,13 @@ export interface ShareCreatePayload {
 export interface ShareUpdatePayload {
   password?: string;   // empty string to remove, omit to keep
   expiresIn?: number;  // 0 to remove expiry, omit to keep
+}
+
+export interface ConfigRow {
+  key: string;
+  value: string;
+  description: string;
+  updated_at?: number;
 }
 
 export interface ShareVerifyPayload {

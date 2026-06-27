@@ -331,3 +331,10 @@ export const deleteFolderShare = (code: string) =>
 
 export const updateFolderShare = (code: string, p: { password?: string; expiresIn?: number }) =>
   req<{ ok: boolean }>(`/api/shares/folder/${code}`, { method: 'PUT', body: JSON.stringify(p) });
+
+// ───── Config / Settings ─────
+export const fetchConfig = () => req<{ settings: Record<string, string> }>('/api/config');
+export const updateConfig = (settings: Record<string, string>) =>
+  req<{ ok: boolean }>('/api/config', { method: 'PUT', body: JSON.stringify(settings) });
+export const changePassword = (oldPassword: string, newPassword: string) =>
+  req<{ ok: boolean; message: string }>('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });

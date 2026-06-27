@@ -69,6 +69,35 @@ async function ensureSchema(env: Env) {
         await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_topic ON folders(topic_id)").run();
         await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)").run();
       }
+
+      // ───── V4: Settings table (config system) ─────
+      if (!tableNames.includes('settings')) {
+        await env.DB.prepare(`CREATE TABLE settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          description TEXT DEFAULT '',
+          updated_at INTEGER DEFAULT (unixepoch())
+        )`).run();
+        // Seed default values
+        const defaults: [string, string, string][] = [
+          ['download.concurrency', '3',           '并发下载线程数'],
+          ['download.chunk_size_mb', '18',        '下载分块大小(MB)'],
+          ['upload.default_topic', '',            '默认上传话题ID'],
+          ['upload.chunk_size_mb', '18',          '上传分块大小(MB)'],
+          ['upload.auto_chunk_threshold_mb', '10','自动分块阈值(MB)'],
+          ['share.default_expiry_hours', '72',    '分享默认过期时间(小时)'],
+          ['bot.api_concurrency', '2',            'Bot API 最大并发数'],
+          ['bot.api_base_url', '',                '自定义 Bot API 地址'],
+          ['system.auto_cleanup_days', '0',       '自动清理天数(0=关)'],
+          ['system.session_timeout_days', '7',    '会话过期天数'],
+        ];
+        for (const [k, v, d] of defaults) {
+          await env.DB.prepare(
+            'INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)'
+          ).bind(k, v, d).run();
+        }
+        console.log('✅ D1 schema migrated to v4 (settings table)');
+      }
       return; // Already migrated
     }
 
@@ -269,6 +298,77 @@ app.post('/api/shares/folder/verify', async (c) => {
 
 // ═══════════ All routes below require auth ═══════════
 app.use('/api/*', authMiddleware);
+
+// ───── Config (Settings API, auth required) ─────
+
+// GET /api/config — 获取全部配置
+app.get('/api/config', async (c) => {
+  const { results } = await c.env.DB.prepare('SELECT key, value FROM settings').all<{key: string, value: string}>();
+  const settings: Record<string, string> = {};
+  for (const row of results) settings[row.key] = row.value;
+  return c.json({ settings });
+});
+
+// PUT /api/config — 批量更新配置（只更新已存在的键）
+app.put('/api/config', async (c) => {
+  const body = await c.req.json<Record<string, string>>();
+  const now = Math.floor(Date.now() / 1000);
+  for (const [key, value] of Object.entries(body)) {
+    const existing = await c.env.DB.prepare('SELECT key FROM settings WHERE key = ?').bind(key).first();
+    if (!existing) continue; // skip unknown keys
+    await c.env.DB.prepare(
+      'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?'
+    ).bind(value, now, key).run();
+  }
+  return c.json({ ok: true });
+});
+
+// POST /api/auth/change-password — 修改密码（通过 CF API 更新 Secret）
+app.post('/api/auth/change-password', async (c) => {
+  const { oldPassword, newPassword } = await c.req.json();
+  if (!oldPassword || !newPassword) {
+    return c.json({ error: 'oldPassword and newPassword are required' }, 400);
+  }
+  if (newPassword.length < 6) {
+    return c.json({ error: '新密码长度至少6位' }, 400);
+  }
+  // Verify old password
+  const oldBytes = new TextEncoder().encode(oldPassword);
+  const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
+  if (oldBytes.length !== expectedBytes.length) {
+    return c.json({ error: '当前密码错误' }, 403);
+  }
+  const equal = await crypto.subtle.timingSafeEqual(oldBytes, expectedBytes);
+  if (!equal) return c.json({ error: '当前密码错误' }, 403);
+
+  // Update via CF API
+  if (!c.env.CF_API_TOKEN_FOR_SECRET) {
+    return c.json({ error: '服务器未配置密钥管理权限，请联系管理员通过命令行修改密码' }, 501);
+  }
+  if (!c.env.CF_ACCOUNT_ID) {
+    return c.json({ error: 'CF_ACCOUNT_ID 未配置' }, 500);
+  }
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${c.env.CF_ACCOUNT_ID}/workers/scripts/tg-cloud-drive-worker/secrets`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${c.env.CF_API_TOKEN_FOR_SECRET}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'secret_text',
+        name: 'DRIVE_AUTH_TOKEN',
+        text: newPassword,
+      }),
+    }
+  );
+  const data: any = await res.json();
+  if (!data.success) {
+    return c.json({ error: `密码更新失败: ${data.errors?.[0]?.message || '未知错误'}` }, 500);
+  }
+  return c.json({ ok: true, message: '密码已更新，请重新登录' });
+});
 
 // ───── Topics (Folders = Telegram forum topics) ─────
 

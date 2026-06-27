@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath, createFolderShare, fetchAllFolderShares, deleteFolderShare, updateFolderShare } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath, createFolderShare, fetchAllFolderShares, deleteFolderShare, updateFolderShare, fetchConfig, updateConfig, changePassword } from './api/client';
 import { c, s, st } from './design-tokens';
 
 type View = 'login' | 'drive';
@@ -525,6 +525,25 @@ function Dashboard() {
   const [audioDuration, setAudioDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const showAudioPlayer = audioIndex >= 0 && audioQueue.length > 0;
+
+  // ─── Settings / Config state ───
+  const [activeView, setActiveView] = useState<'topics' | 'settings'>('topics');
+  const [settings, setSettings] = useState<Record<string, string>>({});
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [cpOldPassword, setCpOldPassword] = useState('');
+  const [cpNewPassword, setCpNewPassword] = useState('');
+  const [cpConfirmPassword, setCpConfirmPassword] = useState('');
+  const [cpSaving, setCpSaving] = useState(false);
+  const [cpMessage, setCpMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const r = await fetchConfig();
+      setSettings(r.settings);
+    } catch { /* settings already has defaults */ }
+  }, []);
 
   const loadTopics = useCallback(async () => {
     const r = await fetchTopics();
@@ -1364,6 +1383,7 @@ function Dashboard() {
   // Reset file view when clicking share section
   const handleCategoryClick = (cat: typeof activeCategory) => {
     setActiveCategory(cat);
+    setActiveView('topics');
     setShowFolderShares(false);
     setCurrentTopic(null);
     setFiles([]);
@@ -1371,12 +1391,61 @@ function Dashboard() {
 
   const handleTopicClick = (topic: Topic | null) => {
     setActiveCategory(null);
+    setActiveView('topics');
     setShowFolderShares(false);
     setCurrentTopic(topic);
     setCurrentFolder(null);
     setFolderPath([]);
     if (topic) { loadFiles(topic.topicId, null); loadFolders(topic.topicId, null); }
     else setFiles([]);
+  };
+
+  // ─── Settings handlers ───
+  const handleSettingsClick = () => {
+    setActiveView('settings');
+    setActiveCategory(null);
+    setCurrentTopic(null);
+    setFiles([]);
+    setShowFolderShares(false);
+    loadSettings();
+  };
+
+  const handleSaveSettings = async () => {
+    setSettingsSaving(true);
+    setSettingsMessage(null);
+    try {
+      await updateConfig(settings);
+      setSettingsMessage({ type: 'success', text: '设置已保存 ✅' });
+      setTimeout(() => setSettingsMessage(null), 3000);
+    } catch (e: any) {
+      setSettingsMessage({ type: 'error', text: '保存失败: ' + (e.message || '未知错误') });
+    }
+    setSettingsSaving(false);
+  };
+
+  const handleChangePassword = async () => {
+    if (!cpOldPassword || !cpNewPassword || !cpConfirmPassword) {
+      setCpMessage({ type: 'error', text: '请填写所有密码字段' });
+      return;
+    }
+    if (cpNewPassword !== cpConfirmPassword) {
+      setCpMessage({ type: 'error', text: '两次输入的新密码不一致' });
+      return;
+    }
+    if (cpNewPassword.length < 6) {
+      setCpMessage({ type: 'error', text: '新密码长度至少6位' });
+      return;
+    }
+    setCpSaving(true);
+    setCpMessage(null);
+    try {
+      const r = await changePassword(cpOldPassword, cpNewPassword);
+      setCpMessage({ type: 'success', text: r.message || '密码已更新 ✅' });
+      setCpOldPassword(''); setCpNewPassword(''); setCpConfirmPassword('');
+    } catch (e: any) {
+      setCpMessage({ type: 'error', text: e.message || '密码修改失败' });
+    }
+    setCpSaving(false);
   };
 
   const fileIcon = (name: string) => {
@@ -1465,6 +1534,14 @@ function Dashboard() {
                 {cat.icon} {cat.label} <span style={{ color: '#5a5a5a', fontSize: '.75rem' }}>({getCategoryCount(cat.key)})</span>
               </button>
             ))}
+          </div>
+
+          {/* ─── SETTINGS ─── */}
+          <div style={{ borderTop: '1px solid #334155', paddingTop: '1rem' }}>
+            <button
+              onClick={handleSettingsClick}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '.5rem .75rem', borderRadius: 6, border: 'none', background: activeView === 'settings' ? '#242424' : 'transparent', color: '#ffffff', cursor: 'pointer', fontSize: '.875rem' }}
+            >⚙️ Settings</button>
           </div>
         </aside>
 
@@ -1726,6 +1803,167 @@ function Dashboard() {
               )}
             </>
           )}
+
+          {/* ─── Settings view ─── */}
+          {activeView === 'settings' && (
+            <div style={{ maxWidth: 720, margin: '0 auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h2 style={{ margin: 0, fontSize: '1.125rem' }}>⚙️ Settings</h2>
+              </div>
+
+              {/* ── 🔒 Security ── */}
+              <div style={{ marginBottom: '1.5rem', background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', border: '1px solid #242424' }}>
+                <h3 style={{ margin: '0 0 1rem', fontSize: '.9rem', color: '#faff69', fontWeight: 600 }}>🔒 Security</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.75rem' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Login Password</span>
+                  <button onClick={() => { setShowChangePassword(true); setCpMessage(null); }}
+                    style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#38bdf8', cursor: 'pointer', fontSize: '.875rem' }}>
+                    ✏️ Change Password
+                  </button>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Session Timeout</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={1} max={90} value={settings['system.session_timeout_days'] || '7'}
+                      onChange={e => setSettings(s => ({ ...s, 'system.session_timeout_days': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>days</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── ⬇️ Download ── */}
+              <div style={{ marginBottom: '1.5rem', background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', border: '1px solid #242424' }}>
+                <h3 style={{ margin: '0 0 1rem', fontSize: '.9rem', color: '#4ade80', fontWeight: 600 }}>⬇️ Download</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.75rem' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Concurrency</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={1} max={8} value={settings['download.concurrency'] || '3'}
+                      onChange={e => setSettings(s => ({ ...s, 'download.concurrency': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>(1-8)</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Chunk Size</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={1} max={20} value={settings['download.chunk_size_mb'] || '18'}
+                      onChange={e => setSettings(s => ({ ...s, 'download.chunk_size_mb': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>MB</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── ⬆️ Upload ── */}
+              <div style={{ marginBottom: '1.5rem', background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', border: '1px solid #242424' }}>
+                <h3 style={{ margin: '0 0 1rem', fontSize: '.9rem', color: '#38bdf8', fontWeight: 600 }}>⬆️ Upload</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.75rem' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Default Topic</span>
+                  <input type="text" placeholder="Topic ID" value={settings['upload.default_topic'] || ''}
+                    onChange={e => setSettings(s => ({ ...s, 'upload.default_topic': e.target.value }))}
+                    style={{ width: 120, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none' }} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.75rem' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Auto-chunk Threshold</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={1} max={50} value={settings['upload.auto_chunk_threshold_mb'] || '10'}
+                      onChange={e => setSettings(s => ({ ...s, 'upload.auto_chunk_threshold_mb': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>MB</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Chunk Size</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={1} max={20} value={settings['upload.chunk_size_mb'] || '18'}
+                      onChange={e => setSettings(s => ({ ...s, 'upload.chunk_size_mb': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>MB</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── 🔗 Share ── */}
+              <div style={{ marginBottom: '1.5rem', background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', border: '1px solid #242424' }}>
+                <h3 style={{ margin: '0 0 1rem', fontSize: '.9rem', color: '#facc15', fontWeight: 600 }}>🔗 Share</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Default Expiry</span>
+                  <select value={settings['share.default_expiry_hours'] || '72'}
+                    onChange={e => setSettings(s => ({ ...s, 'share.default_expiry_hours': e.target.value }))}
+                    style={{ padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', cursor: 'pointer', outline: 'none' }}>
+                    <option value="0">Never</option>
+                    <option value="1">1 hour</option>
+                    <option value="6">6 hours</option>
+                    <option value="24">24 hours</option>
+                    <option value="72">3 days</option>
+                    <option value="168">7 days</option>
+                    <option value="720">30 days</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* ── 🤖 Bot ── */}
+              <div style={{ marginBottom: '1.5rem', background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', border: '1px solid #242424' }}>
+                <h3 style={{ margin: '0 0 1rem', fontSize: '.9rem', color: '#a78bfa', fontWeight: 600 }}>🤖 Bot</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.75rem' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>API Concurrency</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={1} max={8} value={settings['bot.api_concurrency'] || '2'}
+                      onChange={e => setSettings(s => ({ ...s, 'bot.api_concurrency': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>(1-8)</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Custom API URL</span>
+                  <input type="text" placeholder="https://..." value={settings['bot.api_base_url'] || ''}
+                    onChange={e => setSettings(s => ({ ...s, 'bot.api_base_url': e.target.value }))}
+                    style={{ width: 240, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none' }} />
+                </div>
+              </div>
+
+              {/* ── 🧹 Auto Cleanup ── */}
+              <div style={{ marginBottom: '2rem', background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', border: '1px solid #242424' }}>
+                <h3 style={{ margin: '0 0 1rem', fontSize: '.9rem', color: '#f87171', fontWeight: 600 }}>🧹 Auto Cleanup</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#cccccc', fontSize: '.875rem' }}>Auto-delete after</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+                    <input type="number" min={0} max={365} value={settings['system.auto_cleanup_days'] || '0'}
+                      onChange={e => setSettings(s => ({ ...s, 'system.auto_cleanup_days': e.target.value }))}
+                      style={{ width: 60, padding: '.4rem .5rem', borderRadius: 6, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', textAlign: 'center', outline: 'none' }} />
+                    <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>days (0=off)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div style={{ display: 'flex', gap: '.75rem', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <button onClick={handleSaveSettings} disabled={settingsSaving}
+                  style={{ padding: '.65rem 1.5rem', borderRadius: 8, border: 'none', background: settingsSaving ? '#334155' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: settingsSaving ? 'not-allowed' : 'pointer', fontSize: '.9rem', transition: '150ms ease' }}>
+                  {settingsSaving ? '💾 Saving...' : '💾 Save Settings'}
+                </button>
+                <button onClick={() => { setSettingsMessage(null); }}
+                  style={{ padding: '.65rem 1.5rem', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.9rem' }}>
+                  ↻ Reset
+                </button>
+              </div>
+
+              {/* Status messages */}
+              {settingsMessage && (
+                <div style={{
+                  padding: '.75rem 1rem', borderRadius: 8, marginBottom: '1rem',
+                  background: settingsMessage.type === 'success' ? 'rgba(34,197,94,.15)' : 'rgba(248,113,113,.15)',
+                  border: `1px solid ${settingsMessage.type === 'success' ? 'rgba(34,197,94,.3)' : 'rgba(248,113,113,.3)'}`,
+                  color: settingsMessage.type === 'success' ? '#4ade80' : '#f87171',
+                  fontSize: '.875rem',
+                }}>
+                  {settingsMessage.text}
+                </div>
+              )}
+            </div>
+          )}
+
         </main>
       </div>
 
@@ -1899,6 +2137,53 @@ function Dashboard() {
               <button onClick={() => setEditShare(null)} style={{ padding: '.5rem 1rem', borderRadius: 8, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
               <button onClick={handleSaveEdit} disabled={savingEdit} style={{ padding: '.5rem 1.5rem', borderRadius: 8, border: 'none', background: '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem', opacity: savingEdit ? .7 : 1 }}>
                 {savingEdit ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Change Password Modal ─── */}
+      {showChangePassword && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setShowChangePassword(false)}>
+          <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.5rem', width: '90%', maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#ffffff' }}>🔒 Change Password</h3>
+              <button onClick={() => setShowChangePassword(false)} style={{ background: 'none', border: 'none', color: '#5a5a5a', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+
+            <div style={{ marginBottom: '.75rem' }}>
+              <label style={{ display: 'block', fontSize: '.8rem', color: '#888888', marginBottom: '.3rem' }}>Current Password</label>
+              <input type="password" value={cpOldPassword} onChange={e => setCpOldPassword(e.target.value)} autoFocus
+                style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ marginBottom: '.75rem' }}>
+              <label style={{ display: 'block', fontSize: '.8rem', color: '#888888', marginBottom: '.3rem' }}>New Password</label>
+              <input type="password" value={cpNewPassword} onChange={e => setCpNewPassword(e.target.value)}
+                style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', fontSize: '.8rem', color: '#888888', marginBottom: '.3rem' }}>Confirm New Password</label>
+              <input type="password" value={cpConfirmPassword} onChange={e => setCpConfirmPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleChangePassword()}
+                style={{ width: '100%', padding: '.6rem .75rem', borderRadius: 8, border: '1px solid #334155', background: '#0a0a0a', color: '#ffffff', fontSize: '.875rem', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+
+            {cpMessage && (
+              <div style={{
+                padding: '.6rem .75rem', borderRadius: 6, marginBottom: '1rem', fontSize: '.8rem',
+                background: cpMessage.type === 'success' ? 'rgba(34,197,94,.15)' : 'rgba(248,113,113,.15)',
+                border: `1px solid ${cpMessage.type === 'success' ? 'rgba(34,197,94,.3)' : 'rgba(248,113,113,.3)'}`,
+                color: cpMessage.type === 'success' ? '#4ade80' : '#f87171',
+              }}>
+                {cpMessage.text}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowChangePassword(false)} style={{ padding: '.5rem 1rem', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.875rem' }}>Cancel</button>
+              <button onClick={handleChangePassword} disabled={cpSaving}
+                style={{ padding: '.5rem 1.5rem', borderRadius: 6, border: 'none', background: cpSaving ? '#334155' : '#faff69', color: '#0a0a0a', fontWeight: 600, cursor: 'pointer', fontSize: '.875rem', opacity: cpSaving ? .7 : 1 }}>
+                {cpSaving ? 'Updating...' : 'Update Password'}
               </button>
             </div>
           </div>
