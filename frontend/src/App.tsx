@@ -994,7 +994,7 @@ function Dashboard() {
         continue;
       }
       if (entry.isDirectory) {
-        const results = await traverseEntry(entry, '');
+        const results = await traverseEntry(entry, entry.name);
         for (const r of results) {
           hasDir = true;
           allItems.push(r);
