@@ -851,6 +851,8 @@ function Dashboard() {
       const token = localStorage.getItem('tgcd_auth_token');
       if (token) headers['Authorization'] = 'Bearer ' + token;
     }
+    setMoveFileCount(0);
+    setBatchProgress({ active: true, current: 0, total: ids.length, label: 'Moving...' });
     let moved = 0, failed = 0;
     for (const id of ids) {
       try {
@@ -864,8 +866,9 @@ function Dashboard() {
         failed++;
         console.error('Move file ' + id + ' failed:', e.message);
       }
+      setBatchProgress({ active: true, current: moved + failed, total: ids.length, label: 'Moving...' });
     }
-    setMoveFileCount(0);
+    setBatchProgress({ active: false, current: 0, total: 0, label: '' });
     setSelectedFileIds(new Set());
     if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
     await loadTopics();
@@ -876,27 +879,37 @@ function Dashboard() {
   const [galleryFiles, setGalleryFiles] = useState<DriveFile[]>([]);
   const [galleryIndex, setGalleryIndex] = useState(0);
 
+  // ─── Batch progress ───
+  const [batchProgress, setBatchProgress] = useState<{ active: boolean; current: number; total: number; label: string }>({ active: false, current: 0, total: 0, label: '' });
+  const batchBusy = batchProgress.active || downloadProgress.active;
+
   const handleBatchDownload = useCallback(() => {
     const selected = files.filter(f => selectedFileIds.has(f.id));
-    if (selected.length === 0) return;
+    if (selected.length === 0 || batchBusy) return;
+    setBatchProgress({ active: true, current: 0, total: selected.length, label: 'Downloading...' });
     downloadFiles(selected, (idx, total, name, pct) => {
       setDownloadProgress({ active: true, fileName: name, pct, batch: { current: idx, total } });
+      setBatchProgress({ active: true, current: idx, total, label: 'Downloading...' });
     }).finally(() => {
       setDownloadProgress({ active: false, pct: 0 });
+      setBatchProgress({ active: false, current: 0, total: 0, label: '' });
     });
-  }, [files, selectedFileIds]);
+  }, [files, selectedFileIds, batchBusy]);
 
   const handleBatchDelete = async () => {
     const selected = files.filter(f => selectedFileIds.has(f.id));
-    if (selected.length === 0) return;
+    if (selected.length === 0 || batchBusy) return;
     if (!confirm(`Delete ${selected.length} file(s)? This cannot be undone.`)) return;
+    setBatchProgress({ active: true, current: 0, total: selected.length, label: 'Deleting...' });
     let deleted = 0, failed = 0;
     for (const f of selected) {
       try {
         await deleteFile(f.id);
         deleted++;
       } catch { failed++; }
+      setBatchProgress({ active: true, current: deleted + failed, total: selected.length, label: 'Deleting...' });
     }
+    setBatchProgress({ active: false, current: 0, total: 0, label: '' });
     setSelectedFileIds(new Set());
     if (currentTopic) await loadFiles(currentTopic.topicId, currentFolder);
     await loadTopics();
@@ -1804,17 +1817,17 @@ function Dashboard() {
 
               {/* ─── Batch selection toolbar ─── */}
               {selectedFileIds.size > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '1rem', padding: '.65rem 1rem', background: '#242424', borderRadius: 8, border: '1px solid #2a2a2a', flexWrap: 'wrap' }}>
-                  <input type="checkbox" checked={selectedFileIds.size === files.length} onChange={selectAllFiles}
-                    style={{ accentColor: '#faff69', width: 16, height: 16, cursor: 'pointer' }} />
-                  <span style={{ color: '#faff69', fontSize: '.875rem', fontWeight: 600, marginRight: '.25rem' }}>{selectedFileIds.size} / {files.length}</span>
-                  <button onClick={handleBatchDownload} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#ffffff', color: '#0a0a0a', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>⬇ Download</button>
-                  <button onClick={handleBatchMoveOpen} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#7dd3fc', color: '#0a0a0a', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>📂 Move</button>
-                  <button onClick={handleBatchDelete} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#f87171', color: '#ffffff', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>🗑 Delete</button>
-                  {files.some(f => selectedFileIds.has(f.id) && (f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name))) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '1rem', padding: '.65rem 1rem', background: '#242424', borderRadius: 8, border: '1px solid #2a2a2a', flexWrap: 'wrap', opacity: batchBusy ? .6 : 1 }}>
+                  <input type="checkbox" checked={selectedFileIds.size === files.length} onChange={selectAllFiles} disabled={batchBusy}
+                    style={{ accentColor: '#faff69', width: 16, height: 16, cursor: batchBusy ? 'not-allowed' : 'pointer' }} />
+                  <span style={{ color: '#faff69', fontSize: '.875rem', fontWeight: 600, marginRight: '.25rem' }}>{batchBusy ? `${batchProgress.label} ${batchProgress.current}/${batchProgress.total}` : `${selectedFileIds.size} / ${files.length}`}</span>
+                  <button onClick={handleBatchDownload} disabled={batchBusy} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: batchBusy ? '#555' : '#ffffff', color: '#0a0a0a', cursor: batchBusy ? 'not-allowed' : 'pointer', fontSize: '.8rem', fontWeight: 600 }}>⬇ Download</button>
+                  <button onClick={handleBatchMoveOpen} disabled={batchBusy} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: batchBusy ? '#555' : '#7dd3fc', color: '#0a0a0a', cursor: batchBusy ? 'not-allowed' : 'pointer', fontSize: '.8rem', fontWeight: 600 }}>📂 Move</button>
+                  <button onClick={handleBatchDelete} disabled={batchBusy} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: batchBusy ? '#555' : '#f87171', color: '#ffffff', cursor: batchBusy ? 'not-allowed' : 'pointer', fontSize: '.8rem', fontWeight: 600 }}>🗑 Delete</button>
+                  {!batchBusy && files.some(f => selectedFileIds.has(f.id) && (f.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name))) && (
                     <button onClick={handleBatchGallery} style={{ padding: '.35rem .65rem', borderRadius: 5, border: 'none', background: '#faff69', color: '#0a0a0a', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600 }}>🖼 Gallery</button>
                   )}
-                  <button onClick={() => setSelectedFileIds(new Set())} style={{ marginLeft: 'auto', padding: '.3rem .5rem', borderRadius: 4, border: '1px solid #334155', background: 'transparent', color: '#888888', cursor: 'pointer', fontSize: '.75rem' }}>✕</button>
+                  <button onClick={() => !batchBusy && setSelectedFileIds(new Set())} disabled={batchBusy} style={{ marginLeft: 'auto', padding: '.3rem .5rem', borderRadius: 4, border: '1px solid #334155', background: 'transparent', color: batchBusy ? '#555' : '#888888', cursor: batchBusy ? 'not-allowed' : 'pointer', fontSize: '.75rem' }}>✕</button>
                 </div>
               )}
 
@@ -2184,6 +2197,19 @@ function Dashboard() {
             <div style={{ width: `${downloadProgress.pct}%`, height: '100%', background: 'linear-gradient(90deg, #faff69, #4ade80)', borderRadius: 3, transition: 'width .3s ease' }} />
           </div>
           <div style={{ fontSize: '.7rem', color: '#5a5a5a', marginTop: '.25rem', textAlign: 'right' }}>{downloadProgress.pct}%</div>
+        </div>
+      )}
+
+      {/* Batch Progress Bar (move/delete) */}
+      {batchProgress.active && !downloadProgress.active && (
+        <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 1000, background: '#242424', borderRadius: 12, padding: '1rem 1.5rem', minWidth: 280, boxShadow: '0 8px 32px rgba(0,0,0,.5)', border: '1px solid #2a2a2a' }}>
+          <div style={{ fontSize: '.875rem', color: '#ffffff', marginBottom: '.5rem' }}>
+            {batchProgress.label} {batchProgress.current}/{batchProgress.total}
+          </div>
+          <div style={{ width: '100%', height: 6, background: '#1a1a1a', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${batchProgress.total > 0 ? (batchProgress.current / batchProgress.total * 100) : 0}%`, height: '100%', background: batchProgress.label === 'Deleting...' ? 'linear-gradient(90deg, #f87171, #ef4444)' : 'linear-gradient(90deg, #7dd3fc, #38bdf8)', borderRadius: 3, transition: 'width .3s ease' }} />
+          </div>
+          <div style={{ fontSize: '.7rem', color: '#5a5a5a', marginTop: '.25rem', textAlign: 'right' }}>{batchProgress.total > 0 ? Math.round(batchProgress.current / batchProgress.total * 100) : 0}%</div>
         </div>
       )}
 
