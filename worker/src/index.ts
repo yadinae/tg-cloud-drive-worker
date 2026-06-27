@@ -90,6 +90,7 @@ async function ensureSchema(env: Env) {
           ['bot.api_base_url', '',                '自定义 Bot API 地址'],
           ['system.auto_cleanup_days', '0',       '自动清理天数(0=关)'],
           ['system.session_timeout_days', '7',    '会话过期天数'],
+        ['system.password_hash', '',             '用户可修改的登录密码(SHA-256)'],
         ];
         for (const [k, v, d] of defaults) {
           await env.DB.prepare(
@@ -157,7 +158,34 @@ app.use('*', cors({
   exposeHeaders: ['Content-Length', 'Content-Disposition', 'Accept-Ranges'],
 }));
 
-// ───── Auth middleware (supports both session cookie and Bearer token) ─────
+// ───── Auth middleware (supports session, env token, and settings password) ─────
+async function sha256(str: string): Promise<string> {
+  const data = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Check password against env var OR settings table hash */
+async function checkPassword(env: Env, password: string): Promise<boolean> {
+  // 1. Check against env DRIVE_AUTH_TOKEN
+  const tokenBytes = new TextEncoder().encode(password);
+  const expectedBytes = new TextEncoder().encode(env.DRIVE_AUTH_TOKEN);
+  if (tokenBytes.length === expectedBytes.length) {
+    try {
+      if (await crypto.subtle.timingSafeEqual(tokenBytes, expectedBytes)) return true;
+    } catch { /* ignore */ }
+  }
+  // 2. Check against settings table password_hash
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'system.password_hash'").first<{value: string}>();
+    if (row && row.value) {
+      const hash = await sha256(password);
+      if (hash === row.value) return true;
+    }
+  } catch { /* settings table may not exist yet */ }
+  return false;
+}
+
 async function authMiddleware(c: any, next: any) {
   // 1. Check session (from X-Session-Id header or cookie)
   const sessionId = c.req.header('X-Session-Id') || c.req.cookie?.session_id || c.req.query('session') || '';
@@ -174,7 +202,7 @@ async function authMiddleware(c: any, next: any) {
     // Session expired or invalid — fall through to token check
   }
 
-  // 2. Fallback: Bearer token (backward compatible)
+  // 2. Fallback: Bearer token (check env var OR settings hash)
   let token = '';
   const authHeader = c.req.header('Authorization');
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -185,14 +213,8 @@ async function authMiddleware(c: any, next: any) {
   if (!token) {
     return c.json({ error: 'Authentication required' }, 401);
   }
-  // Timing-safe comparison
-  const tokenBytes = new TextEncoder().encode(token);
-  const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
-  if (tokenBytes.length !== expectedBytes.length) {
-    return c.json({ error: 'Invalid auth token' }, 403);
-  }
-  const equal = await crypto.subtle.timingSafeEqual(tokenBytes, expectedBytes);
-  if (!equal) return c.json({ error: 'Invalid auth token' }, 403);
+  const ok = await checkPassword(c.env, token);
+  if (!ok) return c.json({ error: 'Invalid auth token' }, 403);
   await next();
 }
 
@@ -213,16 +235,8 @@ app.post('/api/auth/login', async (c) => {
   const { password } = await c.req.json();
   if (!password) return c.json({ error: 'Password required' }, 400);
 
-  // Verify password against DRIVE_AUTH_TOKEN
-  const tokenBytes = new TextEncoder().encode(password);
-  const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
-  let valid = false;
-  if (tokenBytes.length === expectedBytes.length) {
-    try {
-      valid = await crypto.subtle.timingSafeEqual(tokenBytes, expectedBytes);
-    } catch { /* ignore */ }
-  }
-
+  // Verify password against env var OR settings hash
+  const valid = await checkPassword(c.env, password);
   if (!valid) {
     return c.json({ error: 'Invalid password' }, 403);
   }
@@ -355,7 +369,7 @@ app.put('/api/config', async (c) => {
   return c.json({ ok: true });
 });
 
-// POST /api/auth/change-password — 修改密码（通过 CF API 更新 Secret）
+// POST /api/auth/change-password — 修改密码（存储 SHA-256 哈希到 settings 表）
 app.post('/api/auth/change-password', async (c) => {
   const { oldPassword, newPassword } = await c.req.json();
   if (!oldPassword || !newPassword) {
@@ -364,42 +378,20 @@ app.post('/api/auth/change-password', async (c) => {
   if (newPassword.length < 6) {
     return c.json({ error: '新密码长度至少6位' }, 400);
   }
-  // Verify old password
-  const oldBytes = new TextEncoder().encode(oldPassword);
-  const expectedBytes = new TextEncoder().encode(c.env.DRIVE_AUTH_TOKEN);
-  if (oldBytes.length !== expectedBytes.length) {
-    return c.json({ error: '当前密码错误' }, 403);
-  }
-  const equal = await crypto.subtle.timingSafeEqual(oldBytes, expectedBytes);
-  if (!equal) return c.json({ error: '当前密码错误' }, 403);
+  // Verify old password against env var OR current hash
+  const valid = await checkPassword(c.env, oldPassword);
+  if (!valid) return c.json({ error: '当前密码错误' }, 403);
 
-  // Update via CF API
-  if (!c.env.CF_API_TOKEN_FOR_SECRET) {
-    return c.json({ error: '服务器未配置密钥管理权限，请联系管理员通过命令行修改密码' }, 501);
-  }
-  if (!c.env.CF_ACCOUNT_ID) {
-    return c.json({ error: 'CF_ACCOUNT_ID 未配置' }, 500);
-  }
-  const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${c.env.CF_ACCOUNT_ID}/workers/scripts/tg-cloud-drive-worker/secrets`,
-    {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${c.env.CF_API_TOKEN_FOR_SECRET}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: 'secret_text',
-        name: 'DRIVE_AUTH_TOKEN',
-        text: newPassword,
-      }),
-    }
-  );
-  const data: any = await res.json();
-  if (!data.success) {
-    return c.json({ error: `密码更新失败: ${data.errors?.[0]?.message || '未知错误'}` }, 500);
-  }
-  return c.json({ ok: true, message: '密码已更新，请重新登录' });
+  // Hash new password and store in settings table
+  const hash = await sha256(newPassword);
+  await c.env.DB.prepare(
+    "INSERT OR REPLACE INTO settings (key, value, description, updated_at) VALUES ('system.password_hash', ?, ?, ?)"
+  ).bind(hash, '用户可修改的登录密码(SHA-256)', Math.floor(Date.now() / 1000)).run();
+
+  // Also invalidate all existing sessions so user must re-login
+  // (Sessions expire naturally based on TTL; no bulk delete in KV)
+
+  return c.json({ ok: true, message: '密码已更新，请重新登录 ✅' });
 });
 
 // ───── Topics (Folders = Telegram forum topics) ─────

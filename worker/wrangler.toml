@@ -18,10 +18,3 @@ database_id = "272adc8d-f526-4bfb-97b2-6b3f63c992b9"
 [[kv_namespaces]]
 binding = "SHARES"
 id = "468970ee2dbd4779ad0b85649fdfa7e3"
-
-# === Variables for settings system ===
-[vars]
-# Cloudflare Account ID — needed for password change via CF API
-# CF_API_TOKEN_FOR_SECRET must be set via `wrangler secret put CF_API_TOKEN_FOR_SECRET`
-# (scope: workers:secret:edit)
-CF_ACCOUNT_ID = ""
