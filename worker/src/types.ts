@@ -83,6 +83,7 @@ export interface ShareResponse {
   fileName: string;
   fileSize: number;
   hasPassword: boolean;
+  password: string | null;
   expiresAt: number | null;
   downloadCount: number;
   createdAt: number;
@@ -159,6 +160,7 @@ export interface FolderShareRecord {
   folderId: number | null;
   name: string;        // display name (folder name or topic name)
   passwordHash: string | null;
+  password?: string | null; // plaintext for display
   createdAt: number;
   downloadCount: number;
   expiresAt: number | null;
@@ -172,6 +174,7 @@ export interface FolderShareResponse {
   name: string;
   fileCount: number;
   hasPassword: boolean;
+  password: string | null;
   expiresAt: number | null;
   downloadCount: number;
   createdAt: number;

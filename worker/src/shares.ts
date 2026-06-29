@@ -63,6 +63,7 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
     fileName: file.name,
     fileSize: file.size,
     passwordHash,
+    password: password || null,
     createdAt: now,
     downloadCount: 0,
     expiresAt,
@@ -114,6 +115,7 @@ export async function getShare(code: string, env: Env): Promise<{
       fileName: record.fileName,
       fileSize: record.fileSize,
       hasPassword: !!record.passwordHash,
+      password: record.password || null,
       expiresAt: record.expiresAt,
       downloadCount: record.downloadCount,
     },
@@ -195,6 +197,7 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
         fileName: record.fileName,
         fileSize: record.fileSize,
         hasPassword: !!record.passwordHash,
+        password: record.password || null,
         expiresAt: record.expiresAt,
         downloadCount: record.downloadCount || 0,
         createdAt: record.createdAt,
@@ -226,6 +229,7 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
             fileName: record.fileName,
             fileSize: record.fileSize,
             hasPassword: !!record.passwordHash,
+            password: record.password || null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             createdAt: record.createdAt,
@@ -261,8 +265,10 @@ export async function updateShare(
   if (payload.password !== undefined) {
     if (payload.password) {
       record.passwordHash = await sha256(payload.password);
+      record.password = payload.password;
     } else {
       record.passwordHash = null;
+      record.password = null;
     }
   }
 
@@ -350,6 +356,7 @@ export async function createFolderShare(
     folderId: folderId ?? null,
     name: '', // filled below
     passwordHash,
+    password: password || null,
     createdAt: now,
     downloadCount: 0,
     expiresAt,
@@ -404,6 +411,7 @@ export async function getFolderShare(code: string, env: Env): Promise<{
       name: record.name,
       fileCount: record.fileCount,
       hasPassword: !!record.passwordHash,
+      password: record.password || null,
       expiresAt: record.expiresAt,
       downloadCount: record.downloadCount,
       createdAt: record.createdAt,
@@ -488,6 +496,7 @@ export async function listAllFolderShares(env: Env): Promise<FolderShareResponse
             name: record.name,
             fileCount: record.fileCount,
             hasPassword: !!record.passwordHash,
+            password: record.password || null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             createdAt: record.createdAt,
@@ -521,8 +530,10 @@ export async function updateFolderShare(
   if (payload.password !== undefined) {
     if (payload.password) {
       record.passwordHash = await sha256(payload.password);
+      record.password = payload.password;
     } else {
       record.passwordHash = null;
+      record.password = null;
     }
   }
 
