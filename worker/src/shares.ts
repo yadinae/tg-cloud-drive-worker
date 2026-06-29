@@ -310,7 +310,7 @@ export async function deleteShare(env: Env, code: string): Promise<boolean> {
 // Folder Shares (share an entire folder subtree)
 // ════════════════════════════════════════════════════════════════
 
-const FOLDER_SHARE_PREFIX = 'fshare:';
+const FOLDER_SHARE_PREFIX = 'fldr:';
 
 /**
  * Create a folder share link.
@@ -479,6 +479,8 @@ export async function listAllFolderShares(env: Env): Promise<FolderShareResponse
         const raw = await env.SHARES.get(key.name);
         if (raw) {
           const record: FolderShareRecord = JSON.parse(raw);
+          // Skip reverse mapping entries (arrays) — they belong to file shares
+          if (Array.isArray(record)) continue;
           shares.push({
             code: key.name.replace(FOLDER_SHARE_PREFIX, ''),
             topicId: record.topicId,
