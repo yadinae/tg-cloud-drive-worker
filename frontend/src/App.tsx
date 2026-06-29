@@ -261,9 +261,9 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
                     {s.hasPassword ? (
                       <>
-                        <span style={{ fontSize: '.8rem' }} title={s.password ? 'Password protected' : 'Password set (hash only)'}>🔒</span>
-                        <button onClick={() => setShowPasswords(prev => ({ ...prev, [s.code]: !prev[s.code] }))}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0, lineHeight: 1 }}>
+                        <button onClick={() => { navigator.clipboard.writeText(s.password || ''); setShowPasswords(prev => ({ ...prev, [s.code]: !prev[s.code] })); }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0, lineHeight: 1 }}
+                          title={s.password ? 'Click to copy password' : 'Password set (hash only)'}>
                           {showPasswords[s.code] ? '👁️' : '👁️‍🗨️'}
                         </button>
                         {showPasswords[s.code] && (
@@ -1994,9 +1994,9 @@ function Dashboard() {
                         <div style={{ textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '.25rem' }}>
                           {share.hasPassword ? (
                             <>
-                              <span style={{ fontSize: '.8rem', cursor: 'help' }} title={share.password ? 'Password protected' : 'Password set (hash only)'}>🔒</span>
-                              <button onClick={() => setShowPasswords(prev => ({ ...prev, [share.code]: !prev[share.code] }))}
-                                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0, lineHeight: 1 }}>
+                              <button onClick={() => { navigator.clipboard.writeText(share.password || ''); setShowPasswords(prev => ({ ...prev, [share.code]: !prev[share.code] })); }}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.8rem', padding: 0, lineHeight: 1 }}
+                                title={share.password ? 'Click to copy password' : 'Password set (hash only)'}>
                                 {showPasswords[share.code] ? '👁️' : '👁️‍🗨️'}
                               </button>
                               {showPasswords[share.code] && (
