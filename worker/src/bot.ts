@@ -70,7 +70,7 @@ class AsyncSemaphore {
 const semaphores = new Map<string, AsyncSemaphore>();
 
 function getSemaphore(env: Env): AsyncSemaphore {
-  const maxConcurrent = Math.max(1, parseInt(env.TG_API_CONCURRENCY || '2', 10) || 2);
+  const maxConcurrent = Math.max(1, parseInt(env.TG_API_CONCURRENCY || '5', 10) || 5);
   const key = env.TG_BOT_TOKEN;
   let sem = semaphores.get(key);
   if (!sem) {

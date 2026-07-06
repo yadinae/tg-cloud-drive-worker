@@ -4,6 +4,7 @@ import { createFile, updateFileManifest, getFile } from './metadata';
 
 // ───── Constants ─────
 const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — under Bot API 20MB download limit
+const MAX_CHUNKS = 50;              // Hard limit: 50 chunks ≈ 900MB (Worker sub-request limit)
 const UPLOAD_PREFIX = 'up:'; // KV prefix for in-progress chunked uploads
 
 /**
@@ -19,6 +20,10 @@ export async function uploadCompleteFile(
 ): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
   const totalSize = fileBuffer.byteLength;
   const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
+  if (totalChunks > MAX_CHUNKS) {
+    const maxSize = MAX_CHUNKS * CHUNK_SIZE / (1024 * 1024);
+    throw new Error(`文件过大（${(totalSize / 1024 / 1024).toFixed(0)}MB），超过 ${MAX_CHUNKS} 块上限（${maxSize}MB）。请自建 Bot API 服务器以支持更大文件。`);
+  }
   const fileId = `${fileName}-${Date.now()}`;
 
   const emitProgress = (status: UploadProgress['status'], uploadedChunks: number, uploadedBytes: number) => {

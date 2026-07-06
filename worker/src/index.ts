@@ -87,7 +87,7 @@ async function ensureSchema(env: Env) {
           ['upload.chunk_size_mb', '18',          '上传分块大小(MB)'],
           ['upload.auto_chunk_threshold_mb', '10','自动分块阈值(MB)'],
           ['share.default_expiry_hours', '72',    '分享默认过期时间(小时)'],
-          ['bot.api_concurrency', '2',            'Bot API 最大并发数'],
+          ['bot.api_concurrency', '5',            'Bot API 最大并发数'],
           ['bot.api_base_url', '',                '自定义 Bot API 地址'],
           ['system.auto_cleanup_days', '0',       '自动清理天数(0=关)'],
           ['system.session_timeout_days', '7',    '会话过期天数'],
