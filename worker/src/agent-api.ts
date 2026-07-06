@@ -99,7 +99,7 @@ app.get('/topics', async (c) => {
     try {
       const row = await c.env.DB.prepare(
         'SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as total_size FROM files WHERE topic_id = ?'
-      ).bind(t.topic_id).first<{ count: number; total_size: number }>();
+      ).bind(t.topicId).first<{ count: number; total_size: number }>();
       return {
         ...t,
         fileCount: row?.count ?? 0,
