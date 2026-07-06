@@ -92,6 +92,11 @@ async function ensureSchema(env: Env) {
           ['system.auto_cleanup_days', '0',       '自动清理天数(0=关)'],
           ['system.session_timeout_days', '7',    '会话过期天数'],
         ['system.password_hash', '',             '用户可修改的登录密码(SHA-256)'],
+          // ───── 商城广告配置 ─────
+          ['ads.enabled', 'false',               '分享页是否显示商城广告'],
+          ['ads.shop_name', '我们的商城',          '商城名称'],
+          ['ads.shop_url', 'https://sale.studyai.icu', '商城链接'],
+          ['ads.products', '[]',                 '推荐商品列表(JSON)'],
         ];
         for (const [k, v, d] of defaults) {
           await env.DB.prepare(
@@ -895,10 +900,11 @@ app.get('/dl/f/:code', async (c) => {
     return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Folder Share</title><style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#1e293b;border-radius:12px;padding:2rem;max-width:400px;text-align:center}.error{color:#f87171}</style></head><body><div class="card"><h1 class="error">❌ ${shareInfo.error}</h1></div></body></html>`);
   }
   const share = shareInfo.share!;
+  const ad = await getAdConfig(c.env);
   if (share.hasPassword) {
-    return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: true, origin: new URL(c.req.url).origin }));
+    return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: true, origin: new URL(c.req.url).origin, ad }));
   }
-  return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: false, origin: new URL(c.req.url).origin }));
+  return c.html(shareFolderPageHTML({ code, shareName: share.name, fileCount: share.fileCount, requiresPassword: false, origin: new URL(c.req.url).origin, ad }));
 });
 
 // GET /dl/f/:code/raw/:fileId — download specific file from folder share
@@ -980,10 +986,11 @@ app.get('/dl/:code', async (c) => {
     return c.html(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Share Link</title><style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#1e293b;border-radius:12px;padding:2rem;max-width:400px;text-align:center}.error{color:#f87171}</style></head><body><div class="card"><h1 class="error">❌ ${shareInfo.error}</h1></div></body></html>`);
   }
   const share = shareInfo.share!;
+  const ad = await getAdConfig(c.env);
   if (share.hasPassword) {
-    return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: true }));
+    return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: true, ad }));
   }
-  return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: false }));
+  return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: false, ad }));
 });
 
 app.get('/dl/:code/raw', async (c) => {
@@ -1008,6 +1015,82 @@ app.onError((err, c) => {
 
 export default app;
 
+// ───── Ad Config ─────
+interface AdProduct {
+  name: string;
+  price: string;
+  url: string;
+  image?: string;
+}
+
+interface AdConfig {
+  enabled: boolean;
+  shopName: string;
+  shopUrl: string;
+  products: AdProduct[];
+}
+
+async function getAdConfig(env: Env): Promise<AdConfig> {
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT key, value FROM settings WHERE key LIKE 'ads.%'"
+    ).all<{ key: string; value: string }>();
+    const map: Record<string, string> = {};
+    for (const r of rows.results) map[r.key] = r.value;
+    const products: AdProduct[] = (() => {
+      try { return JSON.parse(map['ads.products'] || '[]'); }
+      catch { return []; }
+    })();
+    return {
+      enabled: map['ads.enabled'] === 'true',
+      shopName: map['ads.shop_name'] || '我们的商城',
+      shopUrl: map['ads.shop_url'] || 'https://sale.studyai.icu',
+      products,
+    };
+  } catch {
+    return { enabled: false, shopName: '我们的商城', shopUrl: 'https://sale.studyai.icu', products: [] };
+  }
+}
+
+// ───── Ad rendering ─────
+function renderAd(ad: AdConfig | undefined): string {
+  if (!ad || !ad.enabled || ad.products.length === 0) return '';
+  const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const productsHTML = ad.products.slice(0, 3).map(p => `
+    <a href="${esc(p.url)}" target="_blank" rel="noopener" class="ad-item">
+      <span class="ad-icon">🛒</span>
+      <span class="ad-info">
+        <span class="ad-name">${esc(p.name)}</span>
+        <span class="ad-price">¥${esc(p.price)}</span>
+      </span>
+    </a>`).join('\n');
+  return `
+<div class="ad-section">
+  <div class="ad-header">
+    <span class="ad-badge">推荐</span>
+    <span class="ad-title">${esc(ad.shopName)}</span>
+    <a href="${esc(ad.shopUrl)}" target="_blank" rel="noopener" class="ad-more">去逛逛 →</a>
+  </div>
+  ${productsHTML}
+</div>
+<style>
+.ad-section{max-width:${ad.products.length > 1 ? '720px' : '440px'};margin:1rem auto 0;background:#1e293b;border-radius:12px;padding:1rem 1.25rem}
+.ad-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem}
+.ad-badge{background:#faff69;color:#0a0a0a;font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:4px}
+.ad-title{color:#94a3b8;font-size:.85rem;flex:1}
+.ad-more{color:#38bdf8;font-size:.8rem;text-decoration:none;font-weight:600}
+.ad-more:hover{text-decoration:underline}
+.ad-item{display:flex;align-items:center;gap:.75rem;padding:.65rem .75rem;background:#334155;border-radius:8px;text-decoration:none;color:#e2e8f0;transition:background .15s;margin-bottom:.35rem}
+.ad-item:hover{background:#475569}
+.ad-item:last-child{margin-bottom:0}
+.ad-icon{font-size:1.125rem;flex-shrink:0}
+.ad-info{display:flex;flex-direction:column;min-width:0;flex:1}
+.ad-name{font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ad-price{color:#faff69;font-size:.8rem;font-weight:600}
+@media(max-width:600px){.ad-section{padding:.75rem 1rem}}
+</style>`;
+}
+
 // ───── Helper ─────
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 B';
@@ -1022,7 +1105,7 @@ function formatBytes(bytes: number): string {
  * Uses fetch + ReadableStream to download via Worker, shows real-time progress,
  * then triggers browser save-as via blob URL when complete.
  */
-function sharePageHTML(p: { code: string; fileName: string; fileSize: number; requiresPassword: boolean }): string {
+function sharePageHTML(p: { code: string; fileName: string; fileSize: number; requiresPassword: boolean; ad?: AdConfig }): string {
   const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const name = esc(p.fileName);
   const size = formatBytes(p.fileSize);
@@ -1073,6 +1156,7 @@ progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
     <div id="progress-text">准备下载...</div>
   </div>
 </div>
+${renderAd(p.ad)}
 <script>
 ${p.requiresPassword ? `
 async function startDownload(){
@@ -1137,7 +1221,7 @@ function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB']
 /**
  * Generate the folder share page HTML — lists all files in a shared folder with download links.
  */
-function shareFolderPageHTML(p: { code: string; shareName: string; fileCount: number; requiresPassword: boolean; origin: string }): string {
+function shareFolderPageHTML(p: { code: string; shareName: string; fileCount: number; requiresPassword: boolean; origin: string; ad?: AdConfig }): string {
   const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const name = esc(p.shareName);
   const rawUrl = `/dl/f/${p.code}`;
@@ -1198,6 +1282,7 @@ input[type=password]:focus{border-color:#38bdf8}
     </div>
   </div>
 </div>
+${renderAd(p.ad)}
 <script>
 ${p.requiresPassword ? `
 async function verifyPassword(){
@@ -1255,7 +1340,7 @@ function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB']
 /**
  * Generate the image gallery page HTML — responsive grid with lightbox.
  */
-function galleryPageHTML(p: { code: string; shareName: string; images: any[]; origin: string }): string {
+function galleryPageHTML(p: { code: string; shareName: string; images: any[]; origin: string; ad?: AdConfig }): string {
   const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const name = esc(p.shareName);
 
@@ -1343,7 +1428,7 @@ ${p.images.length === 0 ? `
   <div class="lb-info" id="lb-info"></div>
   <div class="lb-counter" id="lb-counter"></div>
 </div>
-
+${renderAd(p.ad)}
 <script>
 const images = ${JSON.stringify(p.images.map(img => ({
     id: img.id,

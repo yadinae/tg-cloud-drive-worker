@@ -163,4 +163,42 @@ app.delete('/shares/:code', async (c) => {
   return c.json({ ok });
 });
 
+// ───── GET /api/agent/ads — get current ad configuration ─────
+app.get('/ads', async (c) => {
+  const { DB } = c.env;
+  const rows = await DB.prepare("SELECT key, value FROM settings WHERE key LIKE 'ads.%'").all<{key: string; value: string}>();
+  const map: Record<string, string> = {};
+  for (const r of rows.results) map[r.key] = r.value;
+  let products: any[] = [];
+  try { products = JSON.parse(map['ads.products'] || '[]'); } catch {}
+  return c.json({
+    enabled: map['ads.enabled'] === 'true',
+    shopName: map['ads.shop_name'] || '我们的商城',
+    shopUrl: map['ads.shop_url'] || 'https://sale.studyai.icu',
+    products,
+  });
+});
+
+// ───── PUT /api/agent/ads — update ad configuration ─────
+app.put('/ads', async (c) => {
+  const body = await c.req.json<{
+    enabled?: boolean;
+    shopName?: string;
+    shopUrl?: string;
+    products?: Array<{ name: string; price: string; url: string; image?: string }>;
+  }>();
+  const { DB } = c.env;
+  const now = Math.floor(Date.now() / 1000);
+  const updates: [string, string][] = [];
+  if (body.enabled !== undefined) updates.push(['ads.enabled', body.enabled ? 'true' : 'false']);
+  if (body.shopName !== undefined) updates.push(['ads.shop_name', body.shopName]);
+  if (body.shopUrl !== undefined) updates.push(['ads.shop_url', body.shopUrl]);
+  if (body.products !== undefined) updates.push(['ads.products', JSON.stringify(body.products)]);
+  for (const [key, value] of updates) {
+    await DB.prepare('INSERT OR REPLACE INTO settings (key, value, description, updated_at) VALUES (?, ?, ?, ?)')
+      .bind(key, value, '商城广告配置', now).run();
+  }
+  return c.json({ ok: true });
+});
+
 export default app;
