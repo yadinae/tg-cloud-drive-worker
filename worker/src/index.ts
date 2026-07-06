@@ -95,7 +95,7 @@ async function ensureSchema(env: Env) {
           // ───── 商城广告配置 ─────
           ['ads.enabled', 'false',               '分享页是否显示商城广告'],
           ['ads.shop_name', '我们的商城',          '商城名称'],
-          ['ads.shop_url', 'https://sale.studyai.icu', '商城链接'],
+          ['ads.shop_url', 'https://www.isoho168.top', '商城链接'],
           ['ads.products', '[]',                 '推荐商品列表(JSON)'],
         ];
         for (const [k, v, d] of defaults) {
@@ -1044,11 +1044,11 @@ async function getAdConfig(env: Env): Promise<AdConfig> {
     return {
       enabled: map['ads.enabled'] === 'true',
       shopName: map['ads.shop_name'] || '我们的商城',
-      shopUrl: map['ads.shop_url'] || 'https://sale.studyai.icu',
+      shopUrl: map['ads.shop_url'] || 'https://www.isoho168.top',
       products,
     };
   } catch {
-    return { enabled: false, shopName: '我们的商城', shopUrl: 'https://sale.studyai.icu', products: [] };
+    return { enabled: false, shopName: '我们的商城', shopUrl: 'https://www.isoho168.top', products: [] };
   }
 }
 

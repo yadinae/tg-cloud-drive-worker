@@ -174,7 +174,7 @@ app.get('/ads', async (c) => {
   return c.json({
     enabled: map['ads.enabled'] === 'true',
     shopName: map['ads.shop_name'] || '我们的商城',
-    shopUrl: map['ads.shop_url'] || 'https://sale.studyai.icu',
+    shopUrl: map['ads.shop_url'] || 'https://www.isoho168.top',
     products,
   });
 });
