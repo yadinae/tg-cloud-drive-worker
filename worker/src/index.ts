@@ -38,6 +38,7 @@ import {
 } from './shares';
 import { verifyBotConnection, deleteFileMessages, createForumTopic, renameForumTopic, deleteForumTopic } from './bot';
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
+import agentApi from './agent-api';
 
 // ───── Auto-migrate D1 on cold start ─────
 async function ensureSchema(env: Env) {
@@ -309,6 +310,9 @@ app.post('/api/shares/folder/verify', async (c) => {
   const result = await verifyFolderSharePassword(code, password || '', c.env);
   return c.json(result);
 });
+
+// ───── Agent API (uses its own AGENT_API_TOKEN auth) ─────
+app.route('/api/agent', agentApi);
 
 // ═══════════ All routes below require auth ═══════════
 app.use('/api/*', authMiddleware);

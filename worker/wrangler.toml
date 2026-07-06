@@ -7,6 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 # TG_BOT_TOKEN             — Telegram Bot Token from @BotFather
 # STORAGE_CHANNEL_ID       — Group/channel where bot stores files (bot must be admin)
 # DRIVE_AUTH_TOKEN         — Bearer token for web app authentication
+# AGENT_API_TOKEN          — Bearer token for /api/agent/* (Hermes Agent integration)
 
 # === D1 — Metadata database ===
 [[d1_databases]]

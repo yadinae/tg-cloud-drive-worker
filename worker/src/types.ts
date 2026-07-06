@@ -14,6 +14,9 @@ export interface Env {
   /** Optional: max concurrent Bot API calls per instance (default: 2).
    *  Helps prevent 429 rate limits under heavy upload concurrency. */
   TG_API_CONCURRENCY?: string;  // parsed as number, default 2
+  /** Optional: Bearer token for Hermes Agent API access.
+   *  Separate from DRIVE_AUTH_TOKEN — only used by /api/agent/* routes. */
+  AGENT_API_TOKEN?: string;
 }
 
 // ───── D1 Row Types ─────
