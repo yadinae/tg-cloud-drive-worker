@@ -1021,6 +1021,7 @@ interface AdProduct {
   price: string;
   url: string;
   image?: string;
+  description?: string;
 }
 
 interface AdConfig {
@@ -1056,39 +1057,78 @@ async function getAdConfig(env: Env): Promise<AdConfig> {
 function renderAd(ad: AdConfig | undefined): string {
   if (!ad || !ad.enabled || ad.products.length === 0) return '';
   const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  const productsHTML = ad.products.slice(0, 3).map(p => `
-    <a href="${esc(p.url)}" target="_blank" rel="noopener" class="ad-item">
-      <span class="ad-icon">🛒</span>
-      <span class="ad-info">
-        <span class="ad-name">${esc(p.name)}</span>
-        <span class="ad-price">¥${esc(p.price)}</span>
-      </span>
-    </a>`).join('\n');
+
+  const productCards = ad.products.slice(0, 8).map(p => {
+    const imgHtml = p.image
+      ? `<img src="${esc(p.image)}" alt="${esc(p.name)}" class="ad-card-img" loading="lazy">`
+      : `<div class="ad-card-img-placeholder">${getProductEmoji(p.name)}</div>`;
+    return `
+    <a href="${esc(p.url)}" target="_blank" rel="noopener" class="ad-card">
+      ${imgHtml}
+      <div class="ad-card-body">
+        <div class="ad-card-name">${esc(p.name)}</div>
+        ${p.description ? `<div class="ad-card-desc">${esc(p.description)}</div>` : ''}
+        <div class="ad-card-bottom">
+          <span class="ad-card-price">¥${esc(p.price)}</span>
+          <span class="ad-card-btn">立即购买</span>
+        </div>
+      </div>
+    </a>`;
+  }).join('\n');
+
   return `
-<div class="ad-section">
-  <div class="ad-header">
-    <span class="ad-badge">推荐</span>
-    <span class="ad-title">${esc(ad.shopName)}</span>
-    <a href="${esc(ad.shopUrl)}" target="_blank" rel="noopener" class="ad-more">去逛逛 →</a>
+<div class="ad-wrap">
+  <div class="ad-inner">
+    <div class="ad-header">
+      <div class="ad-header-left">
+        <span class="ad-badge">🔥 热销推荐</span>
+        <span class="ad-title">${esc(ad.shopName)}</span>
+      </div>
+      <a href="${esc(ad.shopUrl)}" target="_blank" rel="noopener" class="ad-more">去商城逛逛 →</a>
+    </div>
+    <div class="ad-grid">
+      ${productCards}
+    </div>
   </div>
-  ${productsHTML}
 </div>
 <style>
-.ad-section{max-width:${ad.products.length > 1 ? '720px' : '440px'};margin:1rem auto 0;background:#1e293b;border-radius:12px;padding:1rem 1.25rem}
-.ad-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem}
-.ad-badge{background:#faff69;color:#0a0a0a;font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:4px}
-.ad-title{color:#94a3b8;font-size:.85rem;flex:1}
-.ad-more{color:#38bdf8;font-size:.8rem;text-decoration:none;font-weight:600}
-.ad-more:hover{text-decoration:underline}
-.ad-item{display:flex;align-items:center;gap:.75rem;padding:.65rem .75rem;background:#334155;border-radius:8px;text-decoration:none;color:#e2e8f0;transition:background .15s;margin-bottom:.35rem}
-.ad-item:hover{background:#475569}
-.ad-item:last-child{margin-bottom:0}
-.ad-icon{font-size:1.125rem;flex-shrink:0}
-.ad-info{display:flex;flex-direction:column;min-width:0;flex:1}
-.ad-name{font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ad-price{color:#faff69;font-size:.8rem;font-weight:600}
-@media(max-width:600px){.ad-section{padding:.75rem 1rem}}
+.ad-wrap{width:100%;display:flex;justify-content:center;padding:0 1rem 2rem}
+.ad-inner{width:100%;max-width:960px}
+.ad-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding:.5rem 0}
+.ad-header-left{display:flex;align-items:center;gap:.6rem}
+.ad-badge{background:linear-gradient(135deg,#faff69,#f59e0b);color:#0a0a0a;font-size:.75rem;font-weight:700;padding:.2rem .6rem;border-radius:6px}
+.ad-title{color:#94a3b8;font-size:.9rem}
+.ad-more{color:#38bdf8;font-size:.85rem;text-decoration:none;font-weight:600;transition:color .15s}
+.ad-more:hover{color:#7dd3fc;text-decoration:underline}
+.ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.75rem}
+.ad-card{display:flex;flex-direction:column;background:linear-gradient(145deg,#1e293b,#1a1f2e);border:1px solid #2a2a3a;border-radius:12px;overflow:hidden;text-decoration:none;color:#e2e8f0;transition:transform .2s,box-shadow .2s,border-color .2s}
+.ad-card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(0,0,0,.4);border-color:#faff69}
+.ad-card-img{width:100%;height:160px;object-fit:cover;display:block;background:#0f172a}
+.ad-card-img-placeholder{width:100%;height:120px;display:flex;align-items:center;justify-content:center;font-size:3rem;background:linear-gradient(135deg,#1e293b,#0f172a)}
+.ad-card-body{padding:.85rem 1rem 1rem;display:flex;flex-direction:column;flex:1}
+.ad-card-name{font-size:.95rem;font-weight:600;color:#ffffff;margin-bottom:.25rem;line-height:1.3}
+.ad-card-desc{font-size:.78rem;color:#94a3b8;line-height:1.4;margin-bottom:.6rem;flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ad-card-bottom{display:flex;align-items:center;justify-content:space-between;margin-top:auto;padding-top:.5rem;border-top:1px solid #2a2a3a}
+.ad-card-price{color:#faff69;font-size:1.1rem;font-weight:700}
+.ad-card-btn{padding:.35rem .85rem;border-radius:6px;background:linear-gradient(135deg,#faff69,#f59e0b);color:#0a0a0a;font-size:.78rem;font-weight:700;cursor:pointer;transition:opacity .15s}
+.ad-card-btn:hover{opacity:.9}
+@media(max-width:640px){.ad-grid{grid-template-columns:1fr}.ad-wrap{padding:0 .5rem 1.5rem}.ad-card-img,.ad-card-img-placeholder{height:100px}}
 </style>`;
+}
+
+function getProductEmoji(name: string): string {
+  const lc = name.toLowerCase();
+  if (lc.includes('chatgpt')||lc.includes('gpt')) return '🤖';
+  if (lc.includes('netflix')) return '🎬';
+  if (lc.includes('spotify')) return '🎵';
+  if (lc.includes('windows')) return '🪟';
+  if (lc.includes('office')) return '📊';
+  if (lc.includes('爱奇艺')) return '🎥';
+  if (lc.includes('腾讯')||lc.includes('video')) return '📺';
+  if (lc.includes('bilibili')||lc.includes('哔哩')) return '📡';
+  if (lc.includes('流量')||lc.includes('移动')) return '📶';
+  if (lc.includes('sw6')||lc.includes('软件')||lc.includes('授权')) return '💿';
+  return '🛒';
 }
 
 // ───── Helper ─────
@@ -1119,8 +1159,9 @@ function sharePageHTML(p: { code: string; fileName: string; fileSize: number; re
 <title>Download — ${name}</title>
 <style>
 *{box-sizing:border-box;margin:0}
-body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem}
-.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:440px;text-align:center}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;margin:0;padding:2rem 1rem;min-height:100vh}
+.page-wrap{display:flex;flex-direction:column;align-items:center;gap:1.5rem}
+.card{background:linear-gradient(145deg,#1e293b,#1a1f2e);border:1px solid #2a2a3a;border-radius:12px;padding:2rem;width:100%;max-width:440px;text-align:center}
 h1{color:#38bdf8;font-size:1.2rem;margin-bottom:0;word-break:break-all}
 .meta{color:#94a3b8;font-size:.85rem;margin:.35rem 0 1.5rem}
 label{display:block;color:#94a3b8;font-size:.85rem;margin-bottom:.5rem;text-align:left}
@@ -1140,6 +1181,7 @@ progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
 </style>
 </head>
 <body>
+<div class="page-wrap">
 <div class="card">
   <h1>📁 ${name}</h1>
   <div class="meta">${size}</div>
@@ -1157,6 +1199,7 @@ progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
   </div>
 </div>
 ${renderAd(p.ad)}
+</div>
 <script>
 ${p.requiresPassword ? `
 async function startDownload(){
@@ -1235,7 +1278,7 @@ function shareFolderPageHTML(p: { code: string; shareName: string; fileCount: nu
 <style>
 *{box-sizing:border-box;margin:0}
 body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh;padding:2rem 1rem}
-.card{background:#1e293b;border-radius:12px;padding:2rem;max-width:720px;margin:0 auto}
+.card{background:linear-gradient(145deg,#1e293b,#1a1f2e);border:1px solid #2a2a3a;border-radius:12px;padding:2rem;max-width:720px;margin:0 auto}
 h1{color:#faff69;font-size:1.2rem;margin-bottom:0;word-break:break-all;display:flex;align-items:center;gap:.5rem}
 .meta{color:#94a3b8;font-size:.85rem;margin:.35rem 0 1rem}
 label{display:block;color:#94a3b8;font-size:.85rem;margin-bottom:.5rem;text-align:left}

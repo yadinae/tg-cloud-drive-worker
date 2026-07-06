@@ -68,11 +68,19 @@ def build_ad_products(products: list[dict], max_count: int = 6) -> list[dict]:
             price_yuan = str(price_cents)
         slug = p.get("slug", "")
         url = f"{EDGE_KEY_BASE}/product/{slug}" if slug else EDGE_KEY_BASE
-        result.append({
+        item = {
             "name": p.get("name", "未知商品"),
             "price": price_yuan,
             "url": url,
-        })
+        }
+        # Carry optional fields for richer ad display
+        subtitle = p.get("subtitle")
+        if subtitle:
+            item["description"] = subtitle
+        cover = p.get("coverImage") or p.get("cover_image")
+        if cover:
+            item["image"] = cover
+        result.append(item)
         if len(result) >= max_count:
             break
     return result
