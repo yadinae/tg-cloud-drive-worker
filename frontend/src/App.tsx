@@ -256,6 +256,15 @@ function ShareManager({ file, onClose, onShareCreated }: { file: DriveFile; onCl
                     <a href={s.expiresAt && Date.now() > s.expiresAt ? '#' : `/dl/${s.code}`} target="_blank" style={{ color: '#faff69', textDecoration: 'none' }}>
                       {s.code}
                     </a>
+                    {file.mimeType.startsWith('image/') && (
+                      <button onClick={() => {
+                        const imgUrl = window.location.origin + '/img/' + s.code + '/' + file.id;
+                        navigator.clipboard.writeText(imgUrl);
+                        alert('图片直链已复制: ' + imgUrl);
+                      }} style={{ marginLeft: '.5rem', padding: '.15rem .4rem', borderRadius: 4, border: '1px solid #334155', background: 'transparent', color: '#38bdf8', cursor: 'pointer', fontSize: '.7rem' }}>
+                        🖼️ 直链
+                      </button>
+                    )}
                     {s.expiresAt && Date.now() > s.expiresAt && <span style={{ color: '#f87171', marginLeft: '.5rem', fontSize: '.75rem' }}>expired</span>}
                   </td>
                   <td style={{ padding: '.5rem', display: 'flex', alignItems: 'center', gap: '.25rem' }}>
@@ -1244,7 +1253,7 @@ function Dashboard() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  // ─── Preview Modal (images, video, audio, PDF, Markdown, code) ───
+  // ─── Preview Modal (images, video, audio, PDF, Markdown, code + File Viewer for all other formats) ───
   function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
     const [textContent, setTextContent] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
@@ -1252,8 +1261,7 @@ function Dashboard() {
 
     const isVideo = file.mimeType?.startsWith('video/') || /\.(mp4|webm|mkv|mov)$/i.test(file.name);
     const isAudio = file.mimeType?.startsWith('audio/') || /\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(file.name);
-    const isImage = file.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(file.name);
-    const isSvg = /\.svg$/i.test(file.name);
+    const isImage = file.mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(file.name);
     const isPdf = file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.name);
     const isMarkdown = /\.md$/i.test(file.name);
     const isCode = /\.(js|ts|jsx|tsx|py|java|go|rs|c|cpp|h|sh|bash|yaml|yml|json|xml|css|scss|sql|rb|php|rs|toml)$/i.test(file.name);
@@ -1382,7 +1390,7 @@ function Dashboard() {
             <img style={{ maxWidth: '100%', maxHeight: '85vh', borderRadius: 8, objectFit: 'contain' }} src={dlUrl} alt={file.name} />
           )}
 
-          {/* PDF — browser's built-in viewer */}
+          {/* PDF — browser's built-in viewer (native works better for most cases) */}
           {isPdf && (
             <iframe src={dlUrl} style={{ width: '85vw', height: '85vh', border: 'none', borderRadius: 8, background: '#ffffff' }} title={file.name} />
           )}
@@ -1431,13 +1439,16 @@ function Dashboard() {
             </div>
           )}
 
-          {/* Fallback: unknown type — show download prompt */}
+        {/* Fallback: unknown type — download prompt */}
           {!isVideo && !isAudio && !isImage && !isPdf && !isRenderableText && (
-            <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '2rem', textAlign: 'center', minWidth: 320, border: '1px solid #2a2a2a' }}>
-              <p style={{ fontSize: '3rem', margin: '0 0 .5rem' }}>📄</p>
-              <p style={{ color: '#ffffff', margin: '0 0 .25rem', fontSize: '1rem' }}>{file.name}</p>
-              <p style={{ color: '#5a5a5a', margin: '0 0 1rem', fontSize: '.85rem' }}>{formatBytes(file.size)}</p>
-              <a href={getDownloadUrl(file.id)} download={file.name} style={{ display: 'inline-block', padding: '.6rem 1.5rem', borderRadius: 8, background: '#faff69', color: '#0a0a0a', fontWeight: 600, textDecoration: 'none', fontSize: '.875rem' }}>⬇ Download</a>
+            <div style={{ background: '#1a1a1a', borderRadius: 8, padding: '2rem', textAlign: 'center' }}>
+              <p style={{ color: '#888888', marginBottom: '.75rem', fontSize: '.9rem' }}>
+                ⚡ This file type cannot be previewed inline
+              </p>
+              <a href={dlUrl} download={file.name}
+                style={{ display: 'inline-block', padding: '.55rem 1.2rem', borderRadius: 6, background: '#faff69', color: '#0a0a0a', textDecoration: 'none', fontWeight: 600, fontSize: '.875rem' }}>
+                ⬇ Download
+              </a>
             </div>
           )}
         </div>

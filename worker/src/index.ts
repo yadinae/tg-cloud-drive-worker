@@ -951,14 +951,21 @@ app.get('/dl/f/:code/gallery', async (c) => {
 app.get('/img/:code/:fileId', async (c) => {
   const code = c.req.param('code');
   const fileId = Number(c.req.param('fileId'));
-  // Verify share exists and is valid
-  const shareInfo = await getFolderShare(code, c.env);
-  if (!shareInfo.ok) {
-    return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+  let fileOk = false;
+  // Try file share first
+  const fileShareInfo = await getShare(code, c.env);
+  if (fileShareInfo.ok && fileShareInfo.share) {
+    fileOk = fileShareInfo.share.fileId === fileId;
   }
-  // Verify file belongs to the share
-  const files = await listFilesInTree(c.env, shareInfo.share!.topicId, shareInfo.share!.folderId);
-  if (!files.some(f => f.id === fileId)) {
+  // Fallback to folder share
+  if (!fileOk) {
+    const folderShareInfo = await getFolderShare(code, c.env);
+    if (folderShareInfo.ok && folderShareInfo.share) {
+      const files = await listFilesInTree(c.env, folderShareInfo.share.topicId, folderShareInfo.share.folderId);
+      fileOk = files.some(f => f.id === fileId);
+    }
+  }
+  if (!fileOk) {
     return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
   }
   // Stream file as image with CORS
@@ -987,10 +994,11 @@ app.get('/dl/:code', async (c) => {
   }
   const share = shareInfo.share!;
   const ad = await getAdConfig(c.env);
+  const origin = new URL(c.req.url).origin;
   if (share.hasPassword) {
-    return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: true, ad }));
+    return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: true, origin, ad }));
   }
-  return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: false, ad }));
+  return c.html(sharePageHTML({ code, fileName: share.fileName, fileSize: share.fileSize, requiresPassword: false, origin, ad }));
 });
 
 app.get('/dl/:code/raw', async (c) => {
@@ -1145,7 +1153,7 @@ function formatBytes(bytes: number): string {
  * Uses fetch + ReadableStream to download via Worker, shows real-time progress,
  * then triggers browser save-as via blob URL when complete.
  */
-function sharePageHTML(p: { code: string; fileName: string; fileSize: number; requiresPassword: boolean; ad?: AdConfig }): string {
+function sharePageHTML(p: { code: string; fileName: string; fileSize: number; requiresPassword: boolean; origin: string; ad?: AdConfig }): string {
   const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const name = esc(p.fileName);
   const size = formatBytes(p.fileSize);
@@ -1171,13 +1179,18 @@ input[type=password]:focus{border-color:#38bdf8}
 .btn-primary{background:#38bdf8;color:#0f172a}
 .btn-primary:hover{background:#7dd3fc}
 .btn-primary:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+|.btn-secondary{background:#334155;color:#e2e8f0}
+.btn-secondary:hover{background:#475569}
+.btn-group{display:flex;gap:.5rem;margin-top:.75rem}
+.btn-group .btn{width:auto;flex:1;margin-top:0}
 .error{color:#f87171;font-size:.85rem;margin-top:.5rem;display:none}
 #progress-wrap{display:none;margin-top:1rem}
 progress{width:100%;height:8px;border-radius:4px;overflow:hidden;appearance:none;-webkit-appearance:none}
 progress::-webkit-progress-bar{background:#334155;border-radius:4px}
 progress::-webkit-progress-value{background:#38bdf8;border-radius:4px}
 progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
-#progress-text{color:#94a3b8;font-size:.8rem;margin-top:.35rem}
+.btn-group{display:flex;gap:.5rem;margin-top:1rem;flex-wrap:wrap}
+.btn-primary{flex:1;padding:.75rem;border-radius:8px;border:none;font-size:.95rem;font-weight:600;cursor:pointer;background:#faff69;color:#0a0a0a;transition:.15s}
 </style>
 </head>
 <body>
@@ -1190,20 +1203,28 @@ progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
     <label for="pwd">文件受密码保护</label>
     <input type="password" id="pwd" placeholder="输入密码" autocomplete="off">
     <div class="error" id="error"></div>
-    <button class="btn btn-primary" id="dl-btn" onclick="startDownload()">下载</button>
-  </div>` : `
-  <button class="btn btn-primary" id="dl-btn" onclick="startDownload()">下载</button>`}
+    <button class="btn btn-primary" id="verify-btn" onclick="verifyPassword()">确认</button>
+  </div>
+  <div id="action-wrap" style="display:none">
+    <div class="btn-group">
+      <button class="btn btn-secondary" onclick="doDownload()">⬇ 下载</button>
+      </div>
+      </div>` : `
+      <div class="btn-group">
+      <button class="btn btn-secondary" onclick="startDownload()">⬇ 下载</button>
+      </div>`}
   <div id="progress-wrap">
     <progress id="progress-bar" value="0" max="100"></progress>
     <div id="progress-text">准备下载...</div>
   </div>
 </div>
+
 ${renderAd(p.ad)}
 </div>
 <script>
 ${p.requiresPassword ? `
-async function startDownload(){
-  const btn=document.getElementById('dl-btn');
+async function verifyPassword(){
+  const btn=document.getElementById('verify-btn');
   const err=document.getElementById('error');
   const pwd=document.getElementById('pwd').value;
   err.style.display='none';
@@ -1211,15 +1232,15 @@ async function startDownload(){
   try{
     const res=await fetch('/api/shares/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:pwd})});
     const data=await res.json();
-    if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='下载';return}
+    if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='确认';return}
+    document.getElementById('pw-wrap').style.display='none';
+    document.getElementById('action-wrap').style.display='block';
   }catch(e){
-    err.textContent='网络错误，请重试';err.style.display='block';btn.disabled=false;btn.textContent='下载';return
+    err.textContent='网络错误，请重试';err.style.display='block';btn.disabled=false;btn.textContent='确认'
   }
-  doDownload();
 }` : `
 async function startDownload(){
-  document.getElementById('dl-btn').disabled=true;
-  document.getElementById('dl-btn').textContent='下载中...';
+  document.getElementById('preview-btn')?.style.setProperty('pointer-events','none');
   doDownload();
 }`}
 async function doDownload(){

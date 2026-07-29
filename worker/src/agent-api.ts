@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import type { Env } from './types';
 import { getStats, searchFiles, listFilesPaginated, getFile, listTopics } from './metadata';
 import { createShare, listAllShares, updateShare, deleteShare } from './shares';
+import { uploadCompleteFile } from './storage';
+import { deleteFileMessages } from './bot';
 
 // ───── Agent API ─────
 // Used by Hermes Agent to orchestrate between edge-key, TG cloud drive, and Hexo blog.
@@ -199,6 +201,69 @@ app.put('/ads', async (c) => {
       .bind(key, value, '商城广告配置', now).run();
   }
   return c.json({ ok: true });
+});
+
+// ───── POST /api/agent/upload — upload file (image, doc, etc.) ─────
+app.post('/upload', async (c) => {
+  const contentType = c.req.header('Content-Type') || '';
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ error: 'multipart/form-data required' }, 400);
+  }
+  const formData = await c.req.formData();
+  const fileEntry = formData.get('file') as File | null;
+  if (!fileEntry) {
+    return c.json({ error: 'file field required' }, 400);
+  }
+  const topicId = Number(formData.get('topicId')) || 20;
+  
+  // 自动删除同话题下的同名旧文件
+  const fileName = fileEntry.name;
+  try {
+    const existing = await listFilesPaginated(c.env, topicId, null, 1, 200);
+    for (const f of existing.files || []) {
+      if (f.name === fileName) {
+        const oldFile = await getFile(c.env, f.id);
+        if (oldFile) {
+          await deleteFileMessages(c.env, oldFile.manifest);
+          await c.env.DB.prepare('DELETE FROM files WHERE id = ?').bind(f.id).run();
+        }
+      }
+    }
+  } catch { /* 清理失败不影响上传 */ }
+  
+  const mimeType = fileEntry.type || 'application/octet-stream';
+  const buffer = await fileEntry.arrayBuffer();
+  const result = await uploadCompleteFile(c.env, topicId, fileEntry.name, mimeType, buffer);
+  if (!result.fileId) {
+    return c.json({ error: 'Upload failed' }, 500);
+  }
+  // Auto-create a share so the file is publicly accessible
+  const { createShare } = await import('./shares');
+  const share = await createShare(c.env, { fileId: result.fileId, password: '' });
+  const url = new URL(c.req.url);
+  const shareCode = (share as any).code || result.fileId;
+  const isImage = mimeType.startsWith('image/');
+  return c.json({
+    ok: true,
+    fileId: result.fileId,
+    name: fileEntry.name,
+    mimeType,
+    url: `${url.origin}/dl/${shareCode}`,
+    rawUrl: `${url.origin}/dl/${shareCode}/raw`,
+    imgUrl: isImage ? `${url.origin}/img/${shareCode}/${result.fileId}` : undefined,
+  }, 201);
+});
+
+// ───── DELETE /api/agent/files/:id — delete a file ─────
+app.delete('/files/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'id required' }, 400);
+  const { getFile, deleteFile } = await import('./metadata');
+  const file = await getFile(c.env, id);
+  if (!file) return c.json({ error: 'File not found' }, 404);
+  const deleted = await deleteFileMessages(c.env, file.manifest);
+  await c.env.DB.prepare('DELETE FROM files WHERE id = ?').bind(id).run();
+  return c.json({ ok: true, deleted, fileId: id });
 });
 
 export default app;
