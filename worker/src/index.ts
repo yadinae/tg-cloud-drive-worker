@@ -1005,7 +1005,18 @@ app.get('/dl/:code/raw', async (c) => {
   const code = c.req.param('code');
   const shareInfo = await getShare(code, c.env);
   if (!shareInfo.ok) return c.json({ error: shareInfo.error }, 404);
-  return downloadFileStream(c.env, shareInfo.share!.fileId, c.req.header('Range'), true);
+  const share = shareInfo.share!;
+  // 口令校验：分享设了密码时，raw 直链也必须带正确口令才能下载
+  // （修复：raw 端点此前绕过口令保护，任何知道 code 的人都能下载文件本体）
+  if (share.hasPassword) {
+    const url = new URL(c.req.url);
+    const pw = url.searchParams.get('password') || '';
+    const result = await verifySharePassword(code, pw, c.env);
+    if (!result.ok) {
+      return c.json({ error: 'Password required' }, 403);
+    }
+  }
+  return downloadFileStream(c.env, share.fileId, c.req.header('Range'), true);
 });
 
 // ───── 404 ─────
