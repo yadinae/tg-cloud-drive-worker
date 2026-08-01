@@ -17,6 +17,9 @@ export interface Env {
   /** Optional: Bearer token for Hermes Agent API access.
    *  Separate from DRIVE_AUTH_TOKEN — only used by /api/agent/* routes. */
   AGENT_API_TOKEN?: string;
+  /** Optional: min age (hours) before the scheduled sweeper deletes orphan
+   *  upload chunks. Protects in-progress uploads. Default: 2. */
+  ORPHAN_MIN_AGE_HOURS?: string;
 }
 
 // ───── D1 Row Types ─────

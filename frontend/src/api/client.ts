@@ -121,7 +121,12 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
           const data = JSON.parse(xhr.responseText);
           if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
           else reject(new Error(data.error || `HTTP ${xhr.status}`));
-        } catch { reject(new Error('Invalid response')); }
+        } catch {
+          // Response was not JSON — usually a Cloudflare error page (timeout,
+          // CPU limit, gateway error). Surface a hint about the real cause.
+          const preview = (xhr.responseText || '').slice(0, 200).replace(/\s+/g, ' ').trim();
+          reject(new Error(`Invalid response (HTTP ${xhr.status || '?'}): ${preview || 'empty body — worker may have timed out'}`));
+        }
       };
       xhr.onerror = () => reject(new Error('Network error'));
       xhr.send(fd);
@@ -168,7 +173,11 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
               const data = JSON.parse(xhr.responseText);
               if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolveChunk();
               else rejectChunk(new Error(data.error || `HTTP ${xhr.status}`));
-            } catch { rejectChunk(new Error('Invalid response')); }
+            } catch {
+              // Response was not JSON — usually a Cloudflare error page
+              const preview = (xhr.responseText || '').slice(0, 200).replace(/\s+/g, ' ').trim();
+              rejectChunk(new Error(`Invalid response (HTTP ${xhr.status || '?'}): ${preview || 'empty body — worker may have timed out'}`));
+            }
           };
           xhr.onerror = () => rejectChunk(new Error('Network error'));
           xhr.send(fd);

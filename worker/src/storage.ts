@@ -34,59 +34,101 @@ export async function uploadCompleteFile(
 
   const chunks: ChunkInfo[] = [];
 
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, totalSize);
-    const chunkData = fileBuffer.slice(start, end);
-    const chunkFileName = totalChunks > 1 ? `${fileName}.part${String(i).padStart(4, '0')}` : fileName;
-
-    emitProgress('uploading', i, start);
-
-    let attempts = 0;
-    let success = false;
-    while (!success && attempts < 3) {
-      try {
-        // Send to the specific topic using message_thread_id
-        const chunkInfo = await sendDocumentToChannel(env, chunkData, chunkFileName, 'application/octet-stream', topicId);
-        chunks.push({ ...chunkInfo, part_index: i });
-        success = true;
-      } catch (err: any) {
-        attempts++;
-        if (attempts >= 3) {
-          emitProgress('error', i, start);
-          throw new Error(`Failed to upload chunk ${i} after 3 attempts: ${err.message}`);
+  // ───── Failure rollback ─────
+  // If any chunk fails after some have already been sent to Telegram, the
+  // orphaned messages would accumulate in the channel forever. Delete every
+  // successfully-sent chunk's Telegram message before rethrowing.
+  const rollbackSentChunks = async (): Promise<number> => {
+    let deleted = 0;
+    for (const chunk of chunks) {
+      if (chunk.message_id) {
+        try {
+          if (await deleteTelegramMessage(env, chunk.message_id)) deleted++;
+        } catch (err) {
+          console.error(`Rollback: failed to delete message ${chunk.message_id}:`, err);
         }
-        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempts)));
+      }
+    }
+    return deleted;
+  };
+
+  try {
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, totalSize);
+      const chunkData = fileBuffer.slice(start, end);
+      const chunkFileName = totalChunks > 1 ? `${fileName}.part${String(i).padStart(4, '0')}` : fileName;
+
+      emitProgress('uploading', i, start);
+
+      let attempts = 0;
+      let success = false;
+      while (!success && attempts < 3) {
+        try {
+          // Send to the specific topic using message_thread_id
+          const chunkInfo = await sendDocumentToChannel(env, chunkData, chunkFileName, 'application/octet-stream', topicId);
+          chunks.push({ ...chunkInfo, part_index: i });
+          success = true;
+        } catch (err: any) {
+          attempts++;
+          if (attempts >= 3) {
+            emitProgress('error', i, start);
+            const deleted = await rollbackSentChunks();
+            throw new Error(`Failed to upload chunk ${i} after 3 attempts: ${err.message} (rolled back ${deleted} sent chunks)`);
+          }
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempts)));
+        }
+      }
+
+      // Pace chunks: avoid hitting 20/min Bot API rate limit
+      if (i < totalChunks - 1) {
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
 
-    // Pace chunks: avoid hitting 20/min Bot API rate limit
-    if (i < totalChunks - 1) {
-      await new Promise(r => setTimeout(r, 1500));
+    emitProgress('finalizing', totalChunks, totalSize);
+
+    const manifestJson = JSON.stringify(chunks);
+    const firstChunk = chunks[0];
+    const effectiveMimeType = mimeType || 'application/octet-stream';
+
+    // The message_id is not immediately returned from sendDocument with topic
+    // We store it if available
+    let fileRecord;
+    try {
+      fileRecord = await createFile(
+        env, topicId, fileName, totalSize, effectiveMimeType,
+        manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
+        firstChunk.message_id, // may be undefined for first chunk
+      );
+    } catch (err: any) {
+      // D1 record creation failed → the chunks are unreferenced orphans.
+      // Roll back the Telegram messages so they don't rot in the channel.
+      if (chunks.length > 0) {
+        const deleted = await rollbackSentChunks();
+        console.error(`Upload rollback: deleted ${deleted}/${chunks.length} Telegram messages after D1 failure: ${err.message}`);
+      }
+      throw err;
     }
+
+    // NOTE: updateFileManifest below is a best-effort redundant write; the
+    // full manifest was already stored by createFile, so a failure here must
+    // NOT trigger rollback (that would leave a D1 record pointing at deleted
+    // Telegram messages).
+    if (totalChunks > 1) {
+      try {
+        await updateFileManifest(env, fileRecord.id, manifestJson, totalChunks);
+      } catch (err) {
+        console.error(`updateFileManifest (best-effort) failed for file ${fileRecord.id}:`, err);
+      }
+    }
+
+    emitProgress('done', totalChunks, totalSize);
+
+    return { fileId: fileRecord.id, manifest: chunks };
+  } catch (err: any) {
+    throw err;
   }
-
-  emitProgress('finalizing', totalChunks, totalSize);
-
-  const manifestJson = JSON.stringify(chunks);
-  const firstChunk = chunks[0];
-  const effectiveMimeType = mimeType || 'application/octet-stream';
-
-  // The message_id is not immediately returned from sendDocument with topic
-  // We store it if available
-  const fileRecord = await createFile(
-    env, topicId, fileName, totalSize, effectiveMimeType,
-    manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
-    firstChunk.message_id, // may be undefined for first chunk
-  );
-
-  if (totalChunks > 1) {
-    await updateFileManifest(env, fileRecord.id, manifestJson, totalChunks);
-  }
-
-  emitProgress('done', totalChunks, totalSize);
-
-  return { fileId: fileRecord.id, manifest: chunks };
 }
 
 /**
@@ -285,13 +327,25 @@ export async function receiveUploadChunk(
 
     // Store chunk info in KV
     const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${chunkIndex}`;
-    await env.SHARES.put(chunkKey, JSON.stringify({
-      file_id: chunkInfo.file_id,
-      file_unique_id: chunkInfo.file_unique_id,
-      size: chunkBuffer.byteLength,
-      part_index: chunkIndex,
-      message_id: chunkInfo.message_id,
-    }), { expirationTtl: 86400 }); // 24h TTL
+    try {
+      await env.SHARES.put(chunkKey, JSON.stringify({
+        file_id: chunkInfo.file_id,
+        file_unique_id: chunkInfo.file_unique_id,
+        size: chunkBuffer.byteLength,
+        part_index: chunkIndex,
+        message_id: chunkInfo.message_id,
+        created_at: Date.now(),
+      }), { expirationTtl: 604800 }); // 7d TTL — long enough for cleanup to find orphans
+    } catch (kvErr: any) {
+      // KV write failed AFTER Telegram received the document — the chunk is
+      // now an orphan that no cleanup pass can locate. Delete the Telegram
+      // message immediately so it doesn't rot in the channel.
+      console.error(`Chunk ${chunkIndex} KV write failed, rolling back Telegram message:`, kvErr);
+      if (chunkInfo.message_id) {
+        try { await deleteTelegramMessage(env, chunkInfo.message_id); } catch { /* best effort */ }
+      }
+      throw new Error(`Chunk ${chunkIndex} upload failed: KV write error: ${kvErr.message}`);
+    }
 
     return { ok: true, chunkIndex };
   } catch (err: any) {
@@ -314,6 +368,9 @@ export async function finalizeChunkedUpload(
 ): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
   const chunks: ChunkInfo[] = [];
 
+  // Phase 1: collect ALL chunk infos from KV (do NOT delete KV entries yet —
+  // if createFile below fails we still need the message_ids to roll back
+  // the Telegram messages).
   for (let i = 0; i < totalChunks; i++) {
     const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${i}`;
     const raw = await env.SHARES.get(chunkKey);
@@ -328,23 +385,40 @@ export async function finalizeChunkedUpload(
       part_index: i,
       message_id: info.message_id,
     });
+  }
 
-    // Clean up KV entry
+  // Phase 2: create the D1 record. If this throws, roll back the Telegram
+  // messages so we don't leave orphans in the channel.
+  let fileRecord;
+  try {
+    const manifestJson = JSON.stringify(chunks);
+    const effectiveMimeType = mimeType || 'application/octet-stream';
+    const firstChunk = chunks[0];
+
+    fileRecord = await createFile(
+      env, topicId, fileName, fileSize, effectiveMimeType,
+      manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
+      firstChunk.message_id,
+    );
+  } catch (err: any) {
+    let deleted = 0;
+    for (const chunk of chunks) {
+      if (chunk.message_id) {
+        try { if (await deleteTelegramMessage(env, chunk.message_id)) deleted++; } catch { /* best effort */ }
+      }
+    }
+    console.error(`Finalize rollback: deleted ${deleted}/${chunks.length} Telegram messages after D1 failure: ${err.message}`);
+    throw err;
+  }
+
+  // Phase 3: D1 record exists → now it is safe to clean up KV entries.
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${i}`;
     await env.SHARES.delete(chunkKey);
   }
 
   // Clean up upload metadata (if any)
   await env.SHARES.delete(`${UPLOAD_PREFIX}${uploadId}:meta`).catch(() => {});
-
-  const manifestJson = JSON.stringify(chunks);
-  const effectiveMimeType = mimeType || 'application/octet-stream';
-  const firstChunk = chunks[0];
-
-  const fileRecord = await createFile(
-    env, topicId, fileName, fileSize, effectiveMimeType,
-    manifestJson, totalChunks, firstChunk.file_id, firstChunk.file_unique_id,
-    firstChunk.message_id,
-  );
 
   return { fileId: fileRecord.id, manifest: chunks };
 }
@@ -422,9 +496,13 @@ export async function transferFileByUrl(
  * Clean up all chunks associated with a failed (or abandoned) chunked upload.
  * Deletes Telegram messages for each chunk and removes KV entries.
  * Returns the number of chunks successfully cleaned up.
+ *
+ * @param minAgeMs  If provided, only chunks whose created_at is older than
+ *                  this are cleaned. Used by the scheduled sweeper so it does
+ *                  not delete chunks of an upload still in progress.
  */
-export async function cleanupUploadChunks(env: Env, uploadId: string): Promise<{ deleted: number; failed: number; found: number }> {
-  let deleted = 0, failed = 0, found = 0;
+export async function cleanupUploadChunks(env: Env, uploadId: string, minAgeMs: number = 0): Promise<{ deleted: number; failed: number; found: number; skipped: number }> {
+  let deleted = 0, failed = 0, found = 0, skipped = 0;
   try {
     // List all KV entries with this uploadId prefix
     let cursor: string | undefined;
@@ -436,6 +514,12 @@ export async function cleanupUploadChunks(env: Env, uploadId: string): Promise<{
           const raw = await env.SHARES.get(key.name);
           if (raw) {
             const info = JSON.parse(raw);
+            // Age guard: if the chunk is newer than minAgeMs, it may belong to
+            // an upload still in progress — leave it alone.
+            if (minAgeMs > 0 && info.created_at && Date.now() - info.created_at < minAgeMs) {
+              skipped++;
+              continue;
+            }
             if (info.message_id) {
               const ok = await deleteTelegramMessage(env, info.message_id);
               if (ok) deleted++; else failed++;
@@ -455,7 +539,7 @@ export async function cleanupUploadChunks(env: Env, uploadId: string): Promise<{
   } catch (err) {
     console.error('cleanupUploadChunks error:', err);
   }
-  return { deleted, failed, found };
+  return { deleted, failed, found, skipped };
 }
 
 /**
@@ -464,8 +548,8 @@ export async function cleanupUploadChunks(env: Env, uploadId: string): Promise<{
  * and calls cleanupUploadChunks for each unique uploadId.
  * Returns the total counts across all cleaned uploads.
  */
-export async function cleanupAllOrphanUploads(env: Env): Promise<{ totalDeleted: number; totalFailed: number; totalFound: number; uploadIds: string[] }> {
-  let totalDeleted = 0, totalFailed = 0, totalFound = 0;
+export async function cleanupAllOrphanUploads(env: Env, minAgeMs: number = 0): Promise<{ totalDeleted: number; totalFailed: number; totalFound: number; totalSkipped: number; uploadIds: string[] }> {
+  let totalDeleted = 0, totalFailed = 0, totalFound = 0, totalSkipped = 0;
   const uploadIds = new Set<string>();
   const keysToProcess: string[] = [];
 
@@ -483,11 +567,12 @@ export async function cleanupAllOrphanUploads(env: Env): Promise<{ totalDeleted:
   } while (cursor);
 
   for (const uploadId of uploadIds) {
-    const result = await cleanupUploadChunks(env, uploadId);
+    const result = await cleanupUploadChunks(env, uploadId, minAgeMs);
     totalDeleted += result.deleted;
     totalFailed += result.failed;
     totalFound += result.found;
+    totalSkipped += result.skipped;
   }
 
-  return { totalDeleted, totalFailed, totalFound, uploadIds: Array.from(uploadIds) };
+  return { totalDeleted, totalFailed, totalFound, totalSkipped, uploadIds: Array.from(uploadIds) };
 }

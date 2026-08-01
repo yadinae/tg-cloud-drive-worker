@@ -780,7 +780,9 @@ app.put('/api/shares/folder/:code', async (c) => {
 // ───── Admin: Clean all orphan upload chunks ─────
 app.post('/api/admin/cleanup-orphans', async (c) => {
   try {
-    const result = await cleanupAllOrphanUploads(c.env);
+    // minAgeHours: skip chunks younger than this (protects in-progress uploads)
+    const minAgeHours = Number(c.req.query('minAgeHours')) || 0;
+    const result = await cleanupAllOrphanUploads(c.env, minAgeHours * 3600 * 1000);
     return c.json({ ok: true, ...result });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -1032,7 +1034,30 @@ app.onError((err, c) => {
   return c.json({ error: err.message || 'Internal server error' }, 500);
 });
 
-export default app;
+// ───── Scheduled: periodic orphan cleanup ─────
+// Runs on the cron trigger (see wrangler.toml [triggers]).
+// Cleans up abandoned chunked uploads whose KV entries are older than
+// ORPHAN_MIN_AGE_HOURS (default 2h) — old enough that no in-progress upload
+// could still be writing them, young enough that the 7d KV TTL hasn't
+// deleted the message_id trail yet.
+
+async function scheduledHandler(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  ctx.waitUntil((async () => {
+    try {
+      await ensureSchema(env);
+      const minAgeHours = Number(env.ORPHAN_MIN_AGE_HOURS || 2);
+      const result = await cleanupAllOrphanUploads(env, minAgeHours * 3600 * 1000);
+      console.log(`[scheduled] orphan cleanup: deleted=${result.totalDeleted} failed=${result.totalFailed} found=${result.totalFound} skipped=${result.totalSkipped} uploads=${result.uploadIds.length}`);
+    } catch (err) {
+      console.error('[scheduled] orphan cleanup failed:', err);
+    }
+  })());
+}
+
+export default {
+  fetch: app.fetch.bind(app),
+  scheduled: scheduledHandler,
+};
 
 // ───── Ad Config ─────
 interface AdProduct {
