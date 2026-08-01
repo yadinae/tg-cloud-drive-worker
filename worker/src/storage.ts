@@ -321,12 +321,27 @@ export async function receiveUploadChunk(
   chunkBuffer: ArrayBuffer,
 ): Promise<{ ok: boolean; chunkIndex: number }> {
   const chunkFileName = totalChunks > 1 ? `${fileName}.part${String(chunkIndex).padStart(4, '0')}` : fileName;
+  const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${chunkIndex}`;
 
   try {
+    // Idempotency for retries / resume: if this chunkIndex was already
+    // uploaded (e.g. the previous request reached Telegram but the response
+    // was lost, or a resume re-sends a chunk), delete the OLD Telegram
+    // message before sending a new one so we never accumulate duplicates.
+    try {
+      const existing = await env.SHARES.get(chunkKey);
+      if (existing) {
+        const old = JSON.parse(existing);
+        if (old.message_id) {
+          await deleteTelegramMessage(env, old.message_id).catch(() => {});
+          console.log(`Chunk ${chunkIndex} re-uploaded — deleted previous Telegram message ${old.message_id}`);
+        }
+      }
+    } catch { /* best effort */ }
+
     const chunkInfo = await sendDocumentToChannel(env, chunkBuffer, chunkFileName, 'application/octet-stream', topicId);
 
     // Store chunk info in KV
-    const chunkKey = `${UPLOAD_PREFIX}${uploadId}:${chunkIndex}`;
     try {
       await env.SHARES.put(chunkKey, JSON.stringify({
         file_id: chunkInfo.file_id,
@@ -366,6 +381,17 @@ export async function finalizeChunkedUpload(
   mimeType: string,
   totalChunks: number,
 ): Promise<{ fileId: number; manifest: ChunkInfo[] }> {
+  // Idempotency: if this uploadId already finalized (client retried after a
+  // lost response), return the existing file — the chunks were already
+  // consumed and the KV entries deleted.
+  try {
+    const doneRaw = await env.SHARES.get(`done:${uploadId}`);
+    if (doneRaw) {
+      const done = JSON.parse(doneRaw);
+      return { fileId: done.fileId, manifest: [] };
+    }
+  } catch { /* fall through to normal finalize */ }
+
   const chunks: ChunkInfo[] = [];
 
   // Phase 1: collect ALL chunk infos from KV (do NOT delete KV entries yet —
@@ -419,6 +445,10 @@ export async function finalizeChunkedUpload(
 
   // Clean up upload metadata (if any)
   await env.SHARES.delete(`${UPLOAD_PREFIX}${uploadId}:meta`).catch(() => {});
+
+  // Record idempotency key so a retried finalize (lost response) returns the
+  // same file instead of erroring with "Missing chunk".
+  await env.SHARES.put(`done:${uploadId}`, JSON.stringify({ fileId: fileRecord.id, name: fileName, size: fileSize }), { expirationTtl: 604800 }).catch(() => {});
 
   return { fileId: fileRecord.id, manifest: chunks };
 }

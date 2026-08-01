@@ -98,49 +98,80 @@ function getAuthHeader(): Record<string, string> {
 /**
  * Upload a file to a topic. Files >18MB are split into chunks client-side.
  * Optionally upload into a specific folder.
+ *
+ * Resilience features:
+ * - Per-chunk automatic retry (3 attempts, exponential backoff) for
+ *   transient failures (network errors, invalid/empty responses, HTTP 5xx).
+ * - Resume support: progress is persisted to localStorage after every chunk.
+ *   If the upload fails or the page is closed, re-selecting the SAME file
+ *   (same topic + folder + name + size + mtime) skips already-uploaded
+ *   chunks and continues from where it left off.
  */
 export function uploadFile(topicId: number, file: File, onProgress?: (pct: number) => void, folderId?: number | null): Promise<{ ok: boolean; fileId: number }> {
   const authHeaders = getAuthHeader();
 
-  // ─── Small files: single upload with XHR progress ───
+  // ─── Small files: single upload with retry (idempotent via uploadId) ───
   if (file.size <= CHUNK_THRESHOLD) {
-    return new Promise((resolve, reject) => {
-      const fd = new FormData();
-      fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
-      if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${API_BASE}/api/files/upload`);
-      const sessionId = authHeaders['X-Session-Id'];
-      if (sessionId) xhr.setRequestHeader('X-Session-Id', sessionId);
-      else if (authHeaders['Authorization']) xhr.setRequestHeader('Authorization', authHeaders['Authorization']);
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-      };
-      xhr.onload = () => {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
-          else reject(new Error(data.error || `HTTP ${xhr.status}`));
-        } catch {
-          // Response was not JSON — usually a Cloudflare error page (timeout,
-          // CPU limit, gateway error). Surface a hint about the real cause.
-          const preview = (xhr.responseText || '').slice(0, 200).replace(/\s+/g, ' ').trim();
-          reject(new Error(`Invalid response (HTTP ${xhr.status || '?'}): ${preview || 'empty body — worker may have timed out'}`));
-        }
-      };
-      xhr.onerror = () => reject(new Error('Network error'));
-      xhr.send(fd);
+    // Stable idempotency key: same file + same upload → same uploadId, so a
+    // retry after a lost response reuses the already-created file instead of
+    // duplicating it.
+    const smallKey = `tgcd_small_${topicId}_${folderId ?? 'root'}_${file.name}_${file.size}_${file.lastModified}`;
+    let uploadId = '';
+    try { uploadId = localStorage.getItem(smallKey) || ''; } catch { /* ignore */ }
+    if (!uploadId) {
+      uploadId = crypto.randomUUID();
+      try { localStorage.setItem(smallKey, uploadId); } catch { /* ignore */ }
+    }
+
+    const fd = new FormData();
+    fd.append('file', file); fd.append('topicId', String(topicId)); fd.append('mimeType', file.type);
+    fd.append('uploadId', uploadId);
+    if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
+    return uploadWithRetry({ path: '/api/files/upload', fd, authHeaders, onProgress }).then((res) => {
+      // Success — clear the idempotency key so a later re-upload of the same
+      // file (user intent) starts fresh.
+      try { localStorage.removeItem(smallKey); } catch { /* ignore */ }
+      return res;
     });
   }
 
-  // ─── Large files: chunked upload ───
+  // ─── Large files: chunked upload with resume ───
   const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — must be under Bot API 20MB download limit
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-  const uploadId = crypto.randomUUID();
+
+  // Try to resume a previous interrupted upload of the same file.
+  let session = findResumeSession(topicId, folderId, file);
+  const sessionStale = !session || Date.now() - session.updatedAt > RESUME_STALE_MS;
+  if (sessionStale) {
+    // No session, or it is older than the server-side orphan sweep window —
+    // its chunks may have been cleaned up, so start a fresh upload.
+    session = {
+      uploadId: crypto.randomUUID(),
+      topicId,
+      folderId: folderId ?? null,
+      fileName: file.name,
+      fileSize: file.size,
+      fileLastModified: file.lastModified,
+      totalChunks,
+      doneChunks: [],
+      updatedAt: Date.now(),
+    };
+  }
+  const uploadId = session!.uploadId;
+  const doneChunks = new Set<number>(session!.doneChunks);
+
+  const persist = () => {
+    session!.doneChunks = Array.from(doneChunks);
+    session!.updatedAt = Date.now();
+    const sessions = loadSessions();
+    sessions[uploadId] = session!;
+    saveSessions(sessions);
+  };
 
   async function run() {
     try {
       for (let i = 0; i < totalChunks; i++) {
+        if (doneChunks.has(i)) continue; // resume: skip already-uploaded chunks
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
         const chunk = file.slice(start, end);
@@ -155,57 +186,151 @@ export function uploadFile(topicId: number, file: File, onProgress?: (pct: numbe
         fd.append('mimeType', file.type);
         if (folderId !== undefined && folderId !== null) fd.append('folderId', String(folderId));
 
-        await new Promise<void>((resolveChunk, rejectChunk) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', `${API_BASE}/api/files/upload-chunk`);
-          const sessionId = authHeaders['X-Session-Id'];
-          if (sessionId) xhr.setRequestHeader('X-Session-Id', sessionId);
-          else if (authHeaders['Authorization']) xhr.setRequestHeader('Authorization', authHeaders['Authorization']);
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable && onProgress) {
-              const chunkPct = e.loaded / e.total;
-              const overall = Math.round(((i + chunkPct) / totalChunks) * 100);
-              onProgress(overall);
-            }
-          };
-          xhr.onload = () => {
-            try {
-              const data = JSON.parse(xhr.responseText);
-              if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolveChunk();
-              else rejectChunk(new Error(data.error || `HTTP ${xhr.status}`));
-            } catch {
-              // Response was not JSON — usually a Cloudflare error page
-              const preview = (xhr.responseText || '').slice(0, 200).replace(/\s+/g, ' ').trim();
-              rejectChunk(new Error(`Invalid response (HTTP ${xhr.status || '?'}): ${preview || 'empty body — worker may have timed out'}`));
-            }
-          };
-          xhr.onerror = () => rejectChunk(new Error('Network error'));
-          xhr.send(fd);
+        await uploadWithRetry({
+          path: '/api/files/upload-chunk',
+          fd,
+          authHeaders,
+          onProgress: (pct) => {
+            if (onProgress) onProgress(Math.round(((i + pct / 100) / totalChunks) * 100));
+          },
         });
+        doneChunks.add(i);
+        persist();
         // Pace chunks: 1.5s gap keeps us well under 20/min Bot API limit
         if (i < totalChunks - 1) {
           await new Promise(r => setTimeout(r, 1500));
         }
       }
       // Finalize
-      return req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
+      const result = await req<{ ok: boolean; fileId: number }>('/api/files/finalize', {
         method: 'POST',
         body: JSON.stringify({ uploadId, topicId, name: file.name, size: file.size, mimeType: file.type, totalChunks, folderId }),
       });
-    } catch (err) {
-      // Upload failed — clean up orphaned chunks from Telegram
-      try {
-        await fetch(`${API_BASE}/api/files/cleanup-upload`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(authHeaders['X-Session-Id'] ? { 'X-Session-Id': authHeaders['X-Session-Id'] } : authHeaders['Authorization'] ? { 'Authorization': authHeaders['Authorization'] } : {}) },
-          body: JSON.stringify({ uploadId }),
-        });
-      } catch { /* cleanup is best-effort */ }
+      // Success — drop the resume session
+      const sessions = loadSessions();
+      delete sessions[uploadId];
+      saveSessions(sessions);
+      return result;
+    } catch (err: any) {
+      // Failure — KEEP the resume session so re-selecting the file continues.
+      try { persist(); } catch { /* localStorage may be full — best effort */ }
+      const msg = String(err?.message || err);
+      if (msg.includes('Invalid response') || msg.includes('Network error') || /HTTP 5\d\d/.test(msg)) {
+        throw new Error(`${msg} — 已保存上传进度，重新选择该文件可断点续传`);
+      }
       throw err;
     }
   }
 
   return run();
+}
+
+// ───── Retry + resume helpers ─────
+
+const UPLOAD_RETRY_ATTEMPTS = 3;
+const RESUME_SESSION_KEY = 'tgcd_upload_sessions';
+// Sessions older than this are re-uploaded fully: the server-side cron sweeper
+// removes orphan chunks older than 2h, so their KV records may be gone.
+const RESUME_STALE_MS = 2 * 3600 * 1000;
+
+interface UploadSession {
+  uploadId: string;
+  topicId: number;
+  folderId: number | null;
+  fileName: string;
+  fileSize: number;
+  fileLastModified: number;
+  totalChunks: number;
+  doneChunks: number[];
+  updatedAt: number;
+}
+
+function loadSessions(): Record<string, UploadSession> {
+  try {
+    return JSON.parse(localStorage.getItem(RESUME_SESSION_KEY) || '{}');
+  } catch { return {}; }
+}
+
+function saveSessions(sessions: Record<string, UploadSession>) {
+  try { localStorage.setItem(RESUME_SESSION_KEY, JSON.stringify(sessions)); } catch { /* best effort */ }
+}
+
+function findResumeSession(topicId: number, folderId: number | null | undefined, file: File): UploadSession | null {
+  const sessions = loadSessions();
+  for (const s of Object.values(sessions)) {
+    if (s.topicId === topicId
+      && (s.folderId ?? null) === (folderId ?? null)
+      && s.fileName === file.name
+      && s.fileSize === file.size
+      && s.fileLastModified === file.lastModified) {
+      return s;
+    }
+  }
+  return null;
+}
+
+function xhrUpload(opts: {
+  path: string;
+  fd: FormData;
+  authHeaders: Record<string, string>;
+  onProgress?: (pct: number) => void;
+}): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}${opts.path}`);
+    const sessionId = opts.authHeaders['X-Session-Id'];
+    if (sessionId) xhr.setRequestHeader('X-Session-Id', sessionId);
+    else if (opts.authHeaders['Authorization']) xhr.setRequestHeader('Authorization', opts.authHeaders['Authorization']);
+    if (opts.onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && opts.onProgress) opts.onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
+        else {
+          const err: any = new Error(data.error || `HTTP ${xhr.status}`);
+          err.retryable = xhr.status >= 500;
+          reject(err);
+        }
+      } catch {
+        // Response was not JSON — usually a Cloudflare error page (timeout,
+        // CPU limit, gateway error). Retryable: the request may never have
+        // reached the worker, or the worker died mid-flight.
+        const preview = (xhr.responseText || '').slice(0, 200).replace(/\s+/g, ' ').trim();
+        const err: any = new Error(`Invalid response (HTTP ${xhr.status || '?'}): ${preview || 'empty body — worker may have timed out'}`);
+        err.retryable = true;
+        reject(err);
+      }
+    };
+    xhr.onerror = () => {
+      const err: any = new Error('Network error');
+      err.retryable = true;
+      reject(err);
+    };
+    xhr.send(opts.fd);
+  });
+}
+
+async function uploadWithRetry(opts: {
+  path: string;
+  fd: FormData;
+  authHeaders: Record<string, string>;
+  onProgress?: (pct: number) => void;
+}): Promise<any> {
+  let lastErr: any;
+  for (let attempt = 0; attempt < UPLOAD_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await xhrUpload(opts);
+    } catch (err: any) {
+      lastErr = err;
+      if (!err.retryable || attempt >= UPLOAD_RETRY_ATTEMPTS - 1) break;
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+    }
+  }
+  throw lastErr;
 }
 
 export const renameFile = (id: number, name: string) => req<{ ok: boolean }>(`/api/files/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });

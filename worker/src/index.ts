@@ -562,16 +562,35 @@ app.post('/api/files/upload', async (c) => {
     const fileEntry = formData.get('file') as File | null;
     const topicId = Number(formData.get('topicId'));
     const mimeType = (formData.get('mimeType') as string) || fileEntry?.type || 'application/octet-stream';
+    const uploadId = (formData.get('uploadId') as string) || '';
 
     if (!fileEntry || !topicId) {
       return c.json({ error: 'file and topicId are required' }, 400);
     }
+
+    // Idempotency: if this uploadId already completed (client retried after a
+    // lost response), return the existing file instead of duplicating it.
+    if (uploadId) {
+      try {
+        const doneKey = `done:${uploadId}`;
+        const doneRaw = await c.env.SHARES.get(doneKey);
+        if (doneRaw) {
+          const done = JSON.parse(doneRaw);
+          return c.json({ ok: true, fileId: done.fileId, manifest: [], deduped: true }, 201);
+        }
+      } catch { /* fall through to normal upload */ }
+    }
+
     const buffer = await fileEntry.arrayBuffer();
     const result = await uploadCompleteFile(c.env, topicId, fileEntry.name, mimeType, buffer);
     // Set folder if provided
     const folderId = formData.get('folderId') ? Number(formData.get('folderId')) : null;
     if (folderId && result.fileId) {
       await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, result.fileId).run();
+    }
+    // Record idempotency key (7d TTL — matches chunk TTL)
+    if (uploadId) {
+      await c.env.SHARES.put(`done:${uploadId}`, JSON.stringify({ fileId: result.fileId, name: fileEntry.name, size: buffer.byteLength }), { expirationTtl: 604800 }).catch(() => {});
     }
     return c.json({ ok: true, ...result }, 201);
   }
