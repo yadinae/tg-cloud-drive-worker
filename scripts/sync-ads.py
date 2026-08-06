@@ -23,8 +23,21 @@ import urllib.error
 EDGE_KEY_BASE = "https://www.isoho168.top"
 TG_DRIVE_BASE = "https://tg-cloud-drive-worker.yadinae.workers.dev"
 
-EDGE_KEY_TOKEN = os.environ.get("EDGE_KEY_TOKEN", "36c2a4d7409c26732a61b4f625685348688b169b8a11e6aaefbe78a920b1ba85")
-TG_DRIVE_TOKEN = os.environ.get("TG_DRIVE_TOKEN", "zK8WsseLn97wMOGDBKC3UViY7ZzYMUENRvj4ixq8Wrk")
+
+def _load_from_secrets(name: str) -> str:
+    """从集中凭证库读取 token（零硬编码原则，AA-14 修复）。"""
+    import json
+    path = os.path.expanduser("~/.hermes/scripts/secrets.json")
+    try:
+        with open(path) as f:
+            secrets = json.load(f)
+        return secrets.get(name, "")
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
+EDGE_KEY_TOKEN = os.environ.get("EDGE_KEY_TOKEN") or _load_from_secrets("EDGE_KEY_TOKEN")
+TG_DRIVE_TOKEN = os.environ.get("TG_DRIVE_TOKEN") or _load_from_secrets("TG_DRIVE_TOKEN")
 
 
 def api_get(base: str, path: str, token: str) -> dict:
