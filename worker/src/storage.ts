@@ -463,6 +463,8 @@ export async function transferFileByUrl(
   url: string,
   topicId: number,
   folderId: number | null,
+  overrideFileName?: string,
+  overrideMimeType?: string,
 ): Promise<{ fileId: number; fileName: string; size: number }> {
   const MAX_SIZE = 100 * 1024 * 1024;
 
@@ -487,11 +489,11 @@ export async function transferFileByUrl(
   }
   if (!res) throw new Error('Failed to fetch URL after 3 attempts');
 
-  let fileName = '';
+  let fileName = overrideFileName || '';
   const cd = res.headers.get('Content-Disposition');
   if (cd) {
     const match = cd.match(/filename[^;=\n]*=["']?([^"';\n]*)["']?/);
-    if (match) fileName = decodeURIComponent(match[1]);
+    if (match && !overrideFileName) fileName = decodeURIComponent(match[1]);
   }
   if (!fileName) {
     const urlPath = new URL(url).pathname;
@@ -510,8 +512,8 @@ export async function transferFileByUrl(
     throw new Error(`File too large: ${(buffer.byteLength / 1024 / 1024).toFixed(0)}MB (max ${MAX_SIZE / 1024 / 1024}MB)`);
   }
 
-  const mimeType = res.headers.get('Content-Type') || 'application/octet-stream';
-  const mime = mimeType.split(';')[0].trim();
+  const rawMimeType = overrideMimeType || res.headers.get('Content-Type') || 'application/octet-stream';
+  const mime = rawMimeType.split(';')[0].trim();
 
   const result = await uploadCompleteFile(env, topicId, fileName, mime, buffer);
 

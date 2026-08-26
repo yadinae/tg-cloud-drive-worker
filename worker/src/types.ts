@@ -61,6 +61,7 @@ export interface ShareRow {
   password_hash: string | null;
   expires_at: number | null;
   download_count: number;
+  max_downloads: number | null;
   created_at: number;
 }
 
@@ -92,6 +93,7 @@ export interface ShareResponse {
   password: string | null;
   expiresAt: number | null;
   downloadCount: number;
+  maxDownloads: number | null;
   createdAt: number;
 }
 
@@ -111,11 +113,13 @@ export interface ShareCreatePayload {
   fileId: number;
   password?: string;
   expiresIn?: number; // seconds from now
+  maxDownloads?: number; // max download count (null = unlimited)
 }
 
 export interface ShareUpdatePayload {
   password?: string;   // empty string to remove, omit to keep
   expiresIn?: number;  // 0 to remove expiry, omit to keep
+  maxDownloads?: number | null; // null to remove limit, omit to keep
 }
 
 export interface ConfigRow {
@@ -154,11 +158,44 @@ export interface FolderShareCreatePayload {
   folderId?: number | null; // null = topic root
   password?: string;
   expiresIn?: number; // seconds from now
+  maxDownloads?: number;
 }
 
 export interface FolderShareUpdatePayload {
   password?: string;  // empty string to remove, omit to keep
   expiresIn?: number; // 0 to remove expiry, omit to keep
+  maxDownloads?: number | null;
+}
+// ───── Batch Operation Types ─────
+export interface BatchDeletePayload {
+  fileIds: number[];
+}
+
+export interface BatchMovePayload {
+  fileIds: number[];
+  topicId: number;
+  folderId?: number | null;
+}
+
+export interface BatchTransferPayload {
+  urls: string[];
+  topicId: number;
+  folderId?: number | null;
+}
+
+export interface BatchResult {
+  ok: boolean;
+  succeeded: number;
+  failed: number;
+  errors?: Array<{ id: number | string; error: string }>;
+}
+
+export interface TransferByUrlPayload {
+  url: string;
+  topicId: number;
+  folderId?: number | null;
+  fileName?: string;   // override filename
+  mimeType?: string;   // override MIME type
 }
 
 export interface FolderShareRecord {
@@ -170,6 +207,7 @@ export interface FolderShareRecord {
   createdAt: number;
   downloadCount: number;
   expiresAt: number | null;
+  maxDownloads: number | null;
   fileCount: number;
 }
 
@@ -183,6 +221,7 @@ export interface FolderShareResponse {
   password: string | null;
   expiresAt: number | null;
   downloadCount: number;
+  maxDownloads: number | null;
   createdAt: number;
 }
 

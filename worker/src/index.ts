@@ -687,14 +687,40 @@ app.post('/api/files/cleanup-upload', async (c) => {
 
 // ───── URL Transfer: download from URL and store ─────
 app.post('/api/transfer', async (c) => {
-  const { url, topicId, folderId } = await c.req.json();
+  const { url, topicId, folderId, fileName, mimeType } = await c.req.json();
   if (!url || !topicId) return c.json({ error: 'url and topicId required' }, 400);
   try {
-    const result = await transferFileByUrl(c.env, url, topicId, folderId || null);
+    const result = await transferFileByUrl(c.env, url, topicId, folderId || null, fileName, mimeType);
     return c.json({ ok: true, ...result }, 201);
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
+});
+
+// ───── Batch URL Transfer: download multiple URLs ─────
+app.post('/api/transfer/batch', async (c) => {
+  const { urls, topicId, folderId } = await c.req.json();
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return c.json({ error: 'urls array required' }, 400);
+  }
+  if (!topicId) return c.json({ error: 'topicId required' }, 400);
+  if (urls.length > 20) return c.json({ error: 'Max 20 URLs per batch' }, 400);
+
+  const results: Array<{ url: string; ok: boolean; fileId?: number; fileName?: string; size?: number; error?: string }> = [];
+  let succeeded = 0, failed = 0;
+
+  for (const url of urls) {
+    try {
+      const result = await transferFileByUrl(c.env, url, topicId, folderId || null);
+      results.push({ url, ok: true, fileId: result.fileId, fileName: result.fileName, size: result.size });
+      succeeded++;
+    } catch (err: any) {
+      results.push({ url, ok: false, error: err.message });
+      failed++;
+    }
+  }
+
+  return c.json({ ok: failed === 0, succeeded, failed, results });
 });
 
 // DELETE /api/files/:id — delete file (D1 + Telegram messages)
@@ -712,6 +738,87 @@ app.delete('/api/files/:id', async (c) => {
   }
 
   return c.json({ ok: true, telegramMessagesDeleted: deleted });
+});
+
+// ───── Batch Operations ─────
+
+// POST /api/files/batch/delete — delete multiple files
+app.post('/api/files/batch/delete', async (c) => {
+  const { fileIds } = await c.req.json();
+  if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
+    return c.json({ error: 'fileIds array required' }, 400);
+  }
+  if (fileIds.length > 50) return c.json({ error: 'Max 50 files per batch' }, 400);
+
+  let succeeded = 0, failed = 0;
+  const errors: Array<{ id: number; error: string }> = [];
+
+  for (const id of fileIds) {
+    try {
+      const file = await getAndDeleteFile(c.env, Number(id));
+      if (!file) {
+        errors.push({ id: Number(id), error: 'File not found' });
+        failed++;
+        continue;
+      }
+      try {
+        await deleteFileMessages(c.env, file.manifest);
+      } catch (err: any) {
+        console.error(`Batch delete: Telegram message deletion error for file ${id}:`, err);
+      }
+      succeeded++;
+    } catch (err: any) {
+      errors.push({ id: Number(id), error: err.message });
+      failed++;
+    }
+  }
+
+  return c.json({ ok: failed === 0, succeeded, failed, errors: errors.length > 0 ? errors : undefined });
+});
+
+// POST /api/files/batch/move — move multiple files to another topic/folder
+app.post('/api/files/batch/move', async (c) => {
+  const { fileIds, topicId, folderId } = await c.req.json();
+  if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
+    return c.json({ error: 'fileIds array required' }, 400);
+  }
+  if (!topicId) return c.json({ error: 'topicId required' }, 400);
+  if (fileIds.length > 50) return c.json({ error: 'Max 50 files per batch' }, 400);
+
+  // Verify target topic exists
+  const target = await c.env.DB.prepare('SELECT topic_id FROM topics WHERE topic_id = ?').bind(topicId).first();
+  if (!target) return c.json({ error: 'Target topic not found' }, 404);
+
+  let succeeded = 0, failed = 0;
+  const errors: Array<{ id: number; error: string }> = [];
+
+  for (const id of fileIds) {
+    try {
+      const file = await c.env.DB.prepare('SELECT topic_id, folder_id FROM files WHERE id = ?').bind(Number(id)).first<{topic_id: number, folder_id: number | null}>();
+      if (!file) {
+        errors.push({ id: Number(id), error: 'File not found' });
+        failed++;
+        continue;
+      }
+      // Reset folder_id if moving to different topic
+      if (file.topic_id !== topicId) {
+        await c.env.DB.prepare('UPDATE files SET folder_id = NULL WHERE id = ?').bind(Number(id)).run();
+      }
+      await moveFile(c.env, Number(id), topicId);
+      // Apply explicit folder target
+      if (folderId !== undefined && folderId !== null) {
+        await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, Number(id)).run();
+      } else if (folderId === null) {
+        await c.env.DB.prepare('UPDATE files SET folder_id = NULL WHERE id = ?').bind(Number(id)).run();
+      }
+      succeeded++;
+    } catch (err: any) {
+      errors.push({ id: Number(id), error: err.message });
+      failed++;
+    }
+  }
+
+  return c.json({ ok: failed === 0, succeeded, failed, errors: errors.length > 0 ? errors : undefined });
 });
 
 // ───── File Download ─────

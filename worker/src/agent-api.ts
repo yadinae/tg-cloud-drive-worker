@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import type { Env } from './types';
-import { getStats, searchFiles, listFilesPaginated, getFile, listTopics } from './metadata';
+import { getStats, searchFiles, listFilesPaginated, getFile, listTopics, moveFile, getAndDeleteFile } from './metadata';
 import { createShare, listAllShares, updateShare, deleteShare } from './shares';
-import { uploadCompleteFile } from './storage';
+import { uploadCompleteFile, transferFileByUrl } from './storage';
 import { deleteFileMessages } from './bot';
 
 // ───── Agent API ─────
@@ -264,6 +264,119 @@ app.delete('/files/:id', async (c) => {
   const deleted = await deleteFileMessages(c.env, file.manifest);
   await c.env.DB.prepare('DELETE FROM files WHERE id = ?').bind(id).run();
   return c.json({ ok: true, deleted, fileId: id });
+});
+
+// ───── POST /api/agent/transfer — URL transfer with optional overrides ─────
+app.post('/transfer', async (c) => {
+  const body = await c.req.json<{
+    url: string;
+    topicId?: number;
+    folderId?: number | null;
+    fileName?: string;
+    mimeType?: string;
+  }>();
+  if (!body.url) return c.json({ error: 'url required' }, 400);
+  const topicId = body.topicId || 20;
+  try {
+    const result = await transferFileByUrl(c.env, body.url, topicId, body.folderId || null, body.fileName, body.mimeType);
+    const url = new URL(c.req.url);
+    // Auto-create share for the transferred file
+    const { createShare } = await import('./shares');
+    const share = await createShare(c.env, { fileId: result.fileId });
+    const shareCode = (share as any).code || result.fileId;
+    return c.json({
+      ok: true,
+      fileId: result.fileId,
+      name: result.fileName,
+      size: result.size,
+      url: `${url.origin}/dl/${shareCode}`,
+      rawUrl: `${url.origin}/dl/${shareCode}/raw`,
+    }, 201);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ───── POST /api/agent/transfer/batch — batch URL transfer ─────
+app.post('/transfer/batch', async (c) => {
+  const body = await c.req.json<{
+    urls: string[];
+    topicId?: number;
+    folderId?: number | null;
+  }>();
+  if (!body.urls || !Array.isArray(body.urls) || body.urls.length === 0) {
+    return c.json({ error: 'urls array required' }, 400);
+  }
+  if (body.urls.length > 20) return c.json({ error: 'Max 20 URLs per batch' }, 400);
+  const topicId = body.topicId || 20;
+  const results: Array<{ url: string; ok: boolean; fileId?: number; name?: string; error?: string }> = [];
+  let succeeded = 0, failed = 0;
+  for (const url of body.urls) {
+    try {
+      const result = await transferFileByUrl(c.env, url, topicId, body.folderId || null);
+      results.push({ url, ok: true, fileId: result.fileId, name: result.fileName });
+      succeeded++;
+    } catch (err: any) {
+      results.push({ url, ok: false, error: err.message });
+      failed++;
+    }
+  }
+  return c.json({ ok: failed === 0, succeeded, failed, results });
+});
+
+// ───── POST /api/agent/files/batch/delete — batch delete ─────
+app.post('/files/batch/delete', async (c) => {
+  const { fileIds } = await c.req.json<{ fileIds: number[] }>();
+  if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
+    return c.json({ error: 'fileIds array required' }, 400);
+  }
+  if (fileIds.length > 50) return c.json({ error: 'Max 50 files per batch' }, 400);
+  let succeeded = 0, failed = 0;
+  const errors: Array<{ id: number; error: string }> = [];
+  for (const id of fileIds) {
+    try {
+      const file = await getAndDeleteFile(c.env, Number(id));
+      if (!file) { errors.push({ id: Number(id), error: 'Not found' }); failed++; continue; }
+      try { await deleteFileMessages(c.env, file.manifest); } catch {}
+      succeeded++;
+    } catch (err: any) {
+      errors.push({ id: Number(id), error: err.message });
+      failed++;
+    }
+  }
+  return c.json({ ok: failed === 0, succeeded, failed, errors: errors.length > 0 ? errors : undefined });
+});
+
+// ───── POST /api/agent/files/batch/move — batch move ─────
+app.post('/files/batch/move', async (c) => {
+  const { fileIds, topicId, folderId } = await c.req.json<{ fileIds: number[]; topicId: number; folderId?: number | null }>();
+  if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
+    return c.json({ error: 'fileIds array required' }, 400);
+  }
+  if (!topicId) return c.json({ error: 'topicId required' }, 400);
+  if (fileIds.length > 50) return c.json({ error: 'Max 50 files per batch' }, 400);
+  const target = await c.env.DB.prepare('SELECT topic_id FROM topics WHERE topic_id = ?').bind(topicId).first();
+  if (!target) return c.json({ error: 'Target topic not found' }, 404);
+  let succeeded = 0, failed = 0;
+  const errors: Array<{ id: number; error: string }> = [];
+  for (const id of fileIds) {
+    try {
+      const file = await c.env.DB.prepare('SELECT topic_id FROM files WHERE id = ?').bind(Number(id)).first<{topic_id: number}>();
+      if (!file) { errors.push({ id: Number(id), error: 'Not found' }); failed++; continue; }
+      if (file.topic_id !== topicId) {
+        await c.env.DB.prepare('UPDATE files SET folder_id = NULL WHERE id = ?').bind(Number(id)).run();
+      }
+      await moveFile(c.env, Number(id), topicId);
+      if (folderId !== undefined && folderId !== null) {
+        await c.env.DB.prepare('UPDATE files SET folder_id = ? WHERE id = ?').bind(folderId, Number(id)).run();
+      }
+      succeeded++;
+    } catch (err: any) {
+      errors.push({ id: Number(id), error: err.message });
+      failed++;
+    }
+  }
+  return c.json({ ok: failed === 0, succeeded, failed, errors: errors.length > 0 ? errors : undefined });
 });
 
 export default app;

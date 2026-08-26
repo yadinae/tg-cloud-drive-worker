@@ -67,6 +67,7 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
     createdAt: now,
     downloadCount: 0,
     expiresAt,
+    maxDownloads: payload.maxDownloads ?? null,
   };
 
   await env.SHARES.put(`${SHARE_PREFIX}${code}`, JSON.stringify(record));
@@ -118,6 +119,7 @@ export async function getShare(code: string, env: Env): Promise<{
       password: record.password || null,
       expiresAt: record.expiresAt,
       downloadCount: record.downloadCount,
+      maxDownloads: record.maxDownloads ?? null,
     },
   };
 }
@@ -148,6 +150,11 @@ export async function verifySharePassword(
     if (hash !== record.passwordHash) {
       return { ok: false, error: 'Invalid password' };
     }
+  }
+
+  // Check max downloads limit
+  if (record.maxDownloads && (record.downloadCount || 0) >= record.maxDownloads) {
+    return { ok: false, error: 'Download limit reached' };
   }
 
   // Increment download count
@@ -200,6 +207,7 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
         password: record.password || null,
         expiresAt: record.expiresAt,
         downloadCount: record.downloadCount || 0,
+        maxDownloads: record.maxDownloads ?? null,
         createdAt: record.createdAt,
       });
     }
@@ -232,6 +240,7 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
             password: record.password || null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
+            maxDownloads: record.maxDownloads ?? null,
             createdAt: record.createdAt,
           });
         }
@@ -279,6 +288,11 @@ export async function updateShare(
     } else {
       record.expiresAt = null;
     }
+  }
+
+  // Update max downloads
+  if (payload.maxDownloads !== undefined) {
+    record.maxDownloads = payload.maxDownloads;
   }
 
   await env.SHARES.put(`${SHARE_PREFIX}${code}`, JSON.stringify(record));
@@ -360,6 +374,7 @@ export async function createFolderShare(
     createdAt: now,
     downloadCount: 0,
     expiresAt,
+    maxDownloads: payload.maxDownloads ?? null,
     fileCount: 0,
   };
 
@@ -414,6 +429,7 @@ export async function getFolderShare(code: string, env: Env): Promise<{
       password: record.password || null,
       expiresAt: record.expiresAt,
       downloadCount: record.downloadCount,
+      maxDownloads: record.maxDownloads ?? null,
       createdAt: record.createdAt,
     },
   };
@@ -449,6 +465,11 @@ export async function verifyFolderSharePassword(
     if (hash !== record.passwordHash) {
       return { ok: false, error: 'Invalid password' };
     }
+  }
+
+  // Check max downloads limit
+  if (record.maxDownloads && (record.downloadCount || 0) >= record.maxDownloads) {
+    return { ok: false, error: 'Download limit reached' };
   }
 
   // Increment download count
@@ -499,6 +520,7 @@ export async function listAllFolderShares(env: Env): Promise<FolderShareResponse
             password: record.password || null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
+            maxDownloads: record.maxDownloads ?? null,
             createdAt: record.createdAt,
           });
         }
@@ -543,6 +565,10 @@ export async function updateFolderShare(
     } else {
       record.expiresAt = null;
     }
+  }
+
+  if (payload.maxDownloads !== undefined) {
+    record.maxDownloads = payload.maxDownloads;
   }
 
   await env.SHARES.put(`${FOLDER_SHARE_PREFIX}${code}`, JSON.stringify(record));
