@@ -8,6 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 # STORAGE_CHANNEL_ID       — Group/channel where bot stores files (bot must be admin)
 # DRIVE_AUTH_TOKEN         — Bearer token for web app authentication
 # AGENT_API_TOKEN          — Bearer token for /api/agent/* (Hermes Agent integration)
+# AGENT_DEFAULT_TOPIC      — Default topic ID for agent uploads/transfers (optional, default: 20)
 
 # === D1 — Metadata database ===
 [[d1_databases]]

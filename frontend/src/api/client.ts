@@ -232,6 +232,10 @@ const RESUME_SESSION_KEY = 'tgcd_upload_sessions';
 // Sessions older than this are re-uploaded fully: the server-side cron sweeper
 // removes orphan chunks older than 2h, so their KV records may be gone.
 const RESUME_STALE_MS = 2 * 3600 * 1000;
+// Max age for localStorage upload sessions (7 days)
+const MAX_SESSION_AGE_MS = 7 * 24 * 3600 * 1000;
+// Max number of sessions to keep
+const MAX_SESSIONS = 20;
 
 interface UploadSession {
   uploadId: string;
@@ -253,7 +257,29 @@ function loadSessions(): Record<string, UploadSession> {
 
 function saveSessions(sessions: Record<string, UploadSession>) {
   try { localStorage.setItem(RESUME_SESSION_KEY, JSON.stringify(sessions)); } catch { /* best effort */ }
+  // Cleanup old sessions after saving
+  cleanupOldSessions(sessions);
 }
+
+function cleanupOldSessions(sessions?: Record<string, UploadSession>) {
+  try {
+    const data = sessions || loadSessions();
+    const now = Date.now();
+    let entries = Object.entries(data);
+    // Remove sessions older than MAX_SESSION_AGE_MS
+    entries = entries.filter(([, s]) => now - s.updatedAt < MAX_SESSION_AGE_MS);
+    // If still too many, keep only the most recent MAX_SESSIONS
+    if (entries.length > MAX_SESSIONS) {
+      entries.sort(([, a], [, b]) => b.updatedAt - a.updatedAt);
+      entries = entries.slice(0, MAX_SESSIONS);
+    }
+    const cleaned = Object.fromEntries(entries);
+    localStorage.setItem(RESUME_SESSION_KEY, JSON.stringify(cleaned));
+  } catch { /* best effort */ }
+}
+
+// Run cleanup on module load
+cleanupOldSessions();
 
 function findResumeSession(topicId: number, folderId: number | null | undefined, file: File): UploadSession | null {
   const sessions = loadSessions();
@@ -473,3 +499,6 @@ export const updateConfig = (settings: Record<string, string>) =>
   req<{ ok: boolean }>('/api/config', { method: 'PUT', body: JSON.stringify(settings) });
 export const changePassword = (oldPassword: string, newPassword: string) =>
   req<{ ok: boolean; message: string }>('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
+
+export const cleanupOrphans = (minAgeHours: number = 2) =>
+  req<{ ok: boolean; totalDeleted: number; totalFailed: number; totalFound: number; totalSkipped: number; uploadIds: string[] }>('/api/admin/cleanup-orphans', { method: 'POST', body: JSON.stringify({ minAgeHours }) });

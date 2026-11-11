@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath, createFolderShare, fetchAllFolderShares, deleteFolderShare, updateFolderShare, fetchConfig, updateConfig, changePassword } from './api/client';
+import { isAuthed, login, logout, fetchStats, fetchTopics, createTopic, deleteTopic, renameTopic, fetchFiles, uploadFile, deleteFile, renameFile, createShare, fetchShares, deleteShare, searchFiles, getDlUrl, getDownloadUrl, fetchAllShares, updateShare, downloadFile, downloadFiles, transferFromUrl, fetchFolders, createFolderApi, renameFolderApi, deleteFolderApi, fetchFolderPath, createFolderShare, fetchAllFolderShares, deleteFolderShare, updateFolderShare, fetchConfig, updateConfig, changePassword, cleanupOrphans } from './api/client';
 import { c, s, st } from './design-tokens';
 
 type View = 'login' | 'drive';
@@ -547,6 +547,8 @@ function Dashboard() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [cpOldPassword, setCpOldPassword] = useState('');
   const [cpNewPassword, setCpNewPassword] = useState('');
@@ -1650,6 +1652,18 @@ function Dashboard() {
     setCpSaving(false);
   };
 
+  const handleCleanupOrphans = async () => {
+    setCleanupLoading(true);
+    setCleanupMessage(null);
+    try {
+      const r = await cleanupOrphans(2); // default 2 hours
+      setCleanupMessage({ type: 'success', text: `清理完成：删除 ${r.totalDeleted} 个孤儿上传，失败 ${r.totalFailed} 个，发现 ${r.totalFound} 个，跳过 ${r.totalSkipped} 个` });
+    } catch (e: any) {
+      setCleanupMessage({ type: 'error', text: '清理失败: ' + (e.message || '未知错误') });
+    }
+    setCleanupLoading(false);
+  };
+
   const fileIcon = (name: string) => {
     const ext = name.split('.').pop()?.toLowerCase() || '';
     const icons: Record<string, string> = {
@@ -2177,6 +2191,13 @@ function Dashboard() {
                     <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>days (0=off)</span>
                   </div>
                 </div>
+                <div style={{ marginTop: '1rem', display: 'flex', gap: '.75rem', alignItems: 'center' }}>
+                  <button onClick={handleCleanupOrphans} disabled={cleanupLoading}
+                    style={{ padding: '.5rem 1rem', borderRadius: 6, border: 'none', background: cleanupLoading ? '#334155' : '#f87171', color: '#0a0a0a', fontWeight: 600, cursor: cleanupLoading ? 'not-allowed' : 'pointer', fontSize: '.875rem', transition: '150ms ease' }}>
+                    {cleanupLoading ? '🧹 Cleaning...' : '🧹 Clean Orphans Now'}
+                  </button>
+                  <span style={{ color: '#5a5a5a', fontSize: '.8rem' }}>删除已放弃的分片上传（{'>'}2小时）</span>
+                </div>
               </div>
 
               {/* Action buttons */}
@@ -2201,6 +2222,17 @@ function Dashboard() {
                   fontSize: '.875rem',
                 }}>
                   {settingsMessage.text}
+                </div>
+              )}
+              {cleanupMessage && (
+                <div style={{
+                  padding: '.75rem 1rem', borderRadius: 8, marginBottom: '1rem',
+                  background: cleanupMessage.type === 'success' ? 'rgba(34,197,94,.15)' : 'rgba(248,113,113,.15)',
+                  border: `1px solid ${cleanupMessage.type === 'success' ? 'rgba(34,197,94,.3)' : 'rgba(248,113,113,.3)'}`,
+                  color: cleanupMessage.type === 'success' ? '#4ade80' : '#f87171',
+                  fontSize: '.875rem',
+                }}>
+                  {cleanupMessage.text}
                 </div>
               )}
             </div>
