@@ -11,6 +11,17 @@ import { deleteFileMessages } from './bot';
 
 const app = new Hono<{ Bindings: Env }>();
 
+/** Default topic ID for agent uploads/transfers when not specified.
+ *  Reads from AGENT_DEFAULT_TOPIC env var (set via wrangler secret), falls back to 20. */
+function defaultTopicId(env: Env): number {
+  const v = env.AGENT_DEFAULT_TOPIC;
+  if (v && v.trim()) {
+    const n = parseInt(v.trim(), 10);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return 20;
+}
+
 // ───── Agent Auth Middleware ─────
 app.use('*', async (c, next) => {
   const token = c.req.header('Authorization') || '';
@@ -214,7 +225,7 @@ app.post('/upload', async (c) => {
   if (!fileEntry) {
     return c.json({ error: 'file field required' }, 400);
   }
-  const topicId = Number(formData.get('topicId')) || 20;
+  const topicId = Number(formData.get('topicId')) || defaultTopicId(c.env);
   
   // 自动删除同话题下的同名旧文件
   const fileName = fileEntry.name;
@@ -276,7 +287,7 @@ app.post('/transfer', async (c) => {
     mimeType?: string;
   }>();
   if (!body.url) return c.json({ error: 'url required' }, 400);
-  const topicId = body.topicId || 20;
+  const topicId = body.topicId || defaultTopicId(c.env);
   try {
     const result = await transferFileByUrl(c.env, body.url, topicId, body.folderId || null, body.fileName, body.mimeType);
     const url = new URL(c.req.url);
@@ -308,7 +319,7 @@ app.post('/transfer/batch', async (c) => {
     return c.json({ error: 'urls array required' }, 400);
   }
   if (body.urls.length > 20) return c.json({ error: 'Max 20 URLs per batch' }, 400);
-  const topicId = body.topicId || 20;
+  const topicId = body.topicId || defaultTopicId(c.env);
   const results: Array<{ url: string; ok: boolean; fileId?: number; name?: string; error?: string }> = [];
   let succeeded = 0, failed = 0;
   for (const url of body.urls) {

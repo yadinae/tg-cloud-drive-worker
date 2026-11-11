@@ -219,15 +219,16 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
 /**
  * List ALL shares across all files (with KV pagination).
  */
-export async function listAllShares(env: Env): Promise<ShareResponse[]> {
+export async function listAllShares(env: Env, limit: number = 100): Promise<ShareResponse[]> {
   const shares: ShareResponse[] = [];
   try {
     let cursor: string | undefined;
-    do {
-      const opts: any = { prefix: SHARE_PREFIX };
+    while (shares.length < limit) {
+      const opts: any = { prefix: SHARE_PREFIX, limit: Math.min(1000, limit - shares.length) };
       if (cursor) opts.cursor = cursor;
       const list = await env.SHARES.list(opts);
       for (const key of list.keys) {
+        if (shares.length >= limit) break;
         const raw = await env.SHARES.get(key.name);
         if (raw) {
           const record = JSON.parse(raw);
@@ -237,7 +238,7 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
             fileName: record.fileName,
             fileSize: record.fileSize,
             hasPassword: !!record.passwordHash,
-            password: record.password || null,
+            password: null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             maxDownloads: record.maxDownloads ?? null,
@@ -246,7 +247,8 @@ export async function listAllShares(env: Env): Promise<ShareResponse[]> {
         }
       }
       cursor = (list as any).cursor;
-    } while (cursor);
+      if (!cursor) break;
+    }
   } catch (err) {
     console.error('listAllShares error:', err);
   }
@@ -496,15 +498,16 @@ export async function verifyFolderSharePassword(
 /**
  * List all folder shares.
  */
-export async function listAllFolderShares(env: Env): Promise<FolderShareResponse[]> {
+export async function listAllFolderShares(env: Env, limit: number = 100): Promise<FolderShareResponse[]> {
   const shares: FolderShareResponse[] = [];
   try {
     let cursor: string | undefined;
-    do {
-      const opts: any = { prefix: FOLDER_SHARE_PREFIX };
+    while (shares.length < limit) {
+      const opts: any = { prefix: FOLDER_SHARE_PREFIX, limit: Math.min(1000, limit - shares.length) };
       if (cursor) opts.cursor = cursor;
       const list = await env.SHARES.list(opts);
       for (const key of list.keys) {
+        if (shares.length >= limit) break;
         const raw = await env.SHARES.get(key.name);
         if (raw) {
           const record: FolderShareRecord = JSON.parse(raw);
@@ -517,7 +520,7 @@ export async function listAllFolderShares(env: Env): Promise<FolderShareResponse
             name: record.name,
             fileCount: record.fileCount,
             hasPassword: !!record.passwordHash,
-            password: record.password || null,
+            password: null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             maxDownloads: record.maxDownloads ?? null,
@@ -526,7 +529,8 @@ export async function listAllFolderShares(env: Env): Promise<FolderShareResponse
         }
       }
       cursor = (list as any).cursor;
-    } while (cursor);
+      if (!cursor) break;
+    }
   } catch (err) {
     console.error('listAllFolderShares error:', err);
   }
