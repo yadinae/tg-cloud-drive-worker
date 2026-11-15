@@ -4,6 +4,7 @@
 
 | 日期 | 主题 | 类型 | 文件 |
 |---|---|---|---|
+| 2026-11-15 | 口令校验红线自动化测试（Vitest + Miniflare，20 个用例） | 测试 | [2026-11-15-password-redline-tests.md](2026-11-15-password-redline-tests.md) |
 | 2026-11-15 | 清理 git 历史里的明文登录口令 | 安全 | [2026-11-15-history-purge-plaintext-password.md](2026-11-15-history-purge-plaintext-password.md) |
 | 2026-11-15 | 补齐 OpenAPI 规范并挂载接口发现端点 | 文档/实现 | [2026-11-15-openapi-complete-mount.md](2026-11-15-openapi-complete-mount.md) |
 | 2026-11-15 | URL 直传加 SSRF 拦截（P1） | 安全 | [2026-11-15-url-transfer-ssrf-block-fix.md](2026-11-15-url-transfer-ssrf-block-fix.md) |
