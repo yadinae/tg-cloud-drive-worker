@@ -1141,17 +1141,27 @@ app.get('/img/:code/:fileId', async (c) => {
   if (!fileOk) {
     return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
   }
+  // /img is an image-only hotlink endpoint (product previews): a non-image
+  // file must not leak through here — otherwise any file in a
+  // password-protected share (PDF, ZIP, …) would be downloadable with just
+  // the share code and a guessable file id, bypassing the share password.
+  // Same image predicate as the gallery: MIME type or file extension.
+  const file = await getFile(c.env, fileId);
+  if (!file) {
+    return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+  }
+  const isImage =
+    (file.mime_type || '').startsWith('image/') ||
+    /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(file.name);
+  if (!isImage) {
+    return new Response('Forbidden', { status: 403, headers: { 'Access-Control-Allow-Origin': '*' } });
+  }
   // Stream file as image with CORS
   const response = await downloadFileStream(c.env, fileId, undefined, false);
   // Override CORS and cache headers for hotlinking
   const headers = new Headers(response.headers);
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-  // Ensure Content-Type is image-friendly
-  const ct = headers.get('Content-Type') || '';
-  if (!ct.startsWith('image/') && !ct.includes('octet-stream')) {
-    // Leave as-is — it already has the right type from the file record
-  }
   return new Response(response.body, {
     status: response.status,
     headers,
