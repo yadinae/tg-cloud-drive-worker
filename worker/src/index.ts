@@ -1539,6 +1539,7 @@ async function verifyPassword(){
     const data=await res.json();
     if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='确认';return}
     showFiles(data.files||[], data.name, pwd);
+    document.getElementById('pw-wrap').style.display='none';
   }catch(e){err.textContent='网络错误，请重试';err.style.display='block';btn.disabled=false;btn.textContent='确认'}
 }` : `
 async function init(){try{const r=await fetch('/api/shares/folder/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:''})});const d=await r.json();if(d.ok)showFiles(d.files||[], d.name, '')}catch(e){}}

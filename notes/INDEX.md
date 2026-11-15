@@ -4,6 +4,7 @@
 
 | 日期 | 主题 | 类型 | 文件 |
 |---|---|---|---|
+| 2026-11-15 | 文件夹分享页验证成功后确认按钮卡在“验证中...” | Bug 修复 | [2026-11-15-folder-share-verify-button-stuck-fix.md](2026-11-15-folder-share-verify-button-stuck-fix.md) |
 | 2026-11-15 | 文件夹分享眼睛图标仍显示“hash only”，前端白名单映射丢了口令 | Bug 修复 | [2026-11-15-folder-share-password-frontend-mapping-fix.md](2026-11-15-folder-share-password-frontend-mapping-fix.md) |
 | 2026-11-15 | 分享列表眼睛图标只显示“hash only”，看不到真实口令 | Bug 修复 | [2026-11-15-share-list-password-hash-only-fix.md](2026-11-15-share-list-password-hash-only-fix.md) |
 | 2026-11-15 | 文件夹分享 raw 直链绕过分享口令（同类复发） | 安全/踩坑 | [2026-11-15-folder-share-raw-password-bypass-fix.md](2026-11-15-folder-share-raw-password-bypass-fix.md) |
