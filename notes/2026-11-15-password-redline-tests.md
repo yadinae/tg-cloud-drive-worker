@@ -17,6 +17,6 @@
 
 - 新增 `worker/test/password-redline.test.ts`，20 个用例，覆盖全部 6 个内容出口：单文件 raw、文件夹 raw、单文件分享页、文件夹分享页、文件夹画廊、`/img`（例外）、管理员下载。运行方式：`worker/` 目录下 `npm test`，约 1 秒。
 - 变异测试验证过：临时删掉 `/dl/:code/raw` 的口令校验，恰好 2 个用例失败（无口令→403、错口令→403），其余 18 个仍通过；恢复后 20 个全绿。说明测试真的守住了红线，不是摆设。
-- CI：`.github/workflows/deploy.yml` 在部署前加了 `npm test` 一步，测试失败就不会部署。
+- CI：`.github/workflows/deploy.yml` 准备在部署前加 `npm test` 一步，测试失败就不会部署。但这一步当时没能一起推上去：GitHub App 没有 `workflows` 权限，推 workflow 文件会报 403，只能手动改（在 `Install dependencies` 之后加三行：`Run tests` / `run: npm test` / `working-directory: worker`）。改完再合 PR，CI 才会真正跑起来。
 - 搭建时最隐蔽的坑：Miniflare V4 配置里没有 `vars` 字段，写了会被静默丢掉（worker 的 `env` 里什么都没有），变量要写进 `bindings`。定位时用过临时 `/__debug-env` 路由，调完已删。
 - 遗留：固定端口 18777 有极小概率与本机其他服务冲突，冲突时测试会直接报错，不会静默通过。
