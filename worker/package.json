@@ -6,14 +6,17 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "test": "vitest run",
     "types": "wrangler types"
   },
   "dependencies": {
     "hono": "^4.7.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260608.1",
+    "@cloudflare/vitest-plugin": "^1.8.2",
+    "@cloudflare/workers-types": "^5.20261115.1",
     "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
     "wrangler": "^4.86.0"
   }
 }
