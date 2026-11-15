@@ -40,6 +40,7 @@ import {
 import { verifyBotConnection, deleteFileMessages, createForumTopic, renameForumTopic, deleteForumTopic } from './bot';
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
 import agentApi from './agent-api';
+import { apiIndex, openApiSpec } from './openapi';
 
 // ───── Auto-migrate D1 on cold start ─────
 async function ensureSchema(env: Env) {
@@ -319,6 +320,10 @@ app.post('/api/shares/folder/verify', async (c) => {
 
 // ───── Agent API (uses its own AGENT_API_TOKEN auth) ─────
 app.route('/api/agent', agentApi);
+
+// ───── API Discovery (public — must be registered before authMiddleware) ─────
+app.get('/api', (c) => c.json(apiIndex(new URL(c.req.url))));
+app.get('/api/openapi.json', (c) => c.json(openApiSpec(new URL(c.req.url).origin)));
 
 // ═══════════ All routes below require auth ═══════════
 app.use('/api/*', authMiddleware);
