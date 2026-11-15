@@ -82,7 +82,7 @@ function getSemaphore(env: Env): AsyncSemaphore {
 
 /**
  * Wrap an async function with per-bot concurrency limiting.
- * Ensures no more than TG_API_CONCURRENCY (default 2) simultaneous
+ * Ensures no more than TG_API_CONCURRENCY (default 5) simultaneous
  * Bot API calls for this bot token.
  */
 async function withConcurrency<T>(env: Env, fn: () => Promise<T>): Promise<T> {

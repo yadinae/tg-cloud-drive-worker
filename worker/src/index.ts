@@ -1042,6 +1042,17 @@ app.get('/dl/f/:code/raw/:fileId', async (c) => {
   // Verify share
   const shareInfo = await getFolderShare(code, c.env);
   if (!shareInfo.ok) return c.json({ error: shareInfo.error }, 404);
+  const share = shareInfo.share!;
+  // 口令校验：分享设了密码时，文件夹 raw 直链也必须带正确口令才能下载
+  // （修复：此前与 2026-07-31 单文件 raw 绕过同类，任何知道 code 的人都能下载文件本体）
+  if (share.hasPassword) {
+    const url = new URL(c.req.url);
+    const pw = url.searchParams.get('password') || '';
+    const result = await verifyFolderSharePassword(code, pw, c.env);
+    if (!result.ok) {
+      return c.json({ error: 'Password required' }, 403);
+    }
+  }
   // Verify the file belongs to this share's folder tree
   const files = await listFilesInTree(c.env, shareInfo.share!.topicId, shareInfo.share!.folderId);
   if (!files.some(f => f.id === fileId)) {
@@ -1071,7 +1082,9 @@ app.get('/dl/f/:code/gallery', async (c) => {
   // Load files
   const files = await listFilesInTree(c.env, share.topicId, share.folderId);
   const images = files.filter(f => f.mimeType.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name));
-  return c.html(galleryPageHTML({ code, shareName: share.name, images, origin: new URL(c.req.url).origin }));
+  // 画廊已在上方校验过口令，把已验证的 pwd 透传给缩略图（缩略图走 /dl/f/:code/raw/:fileId，现已要求口令）
+  const pwd = c.req.query('pwd') || '';
+  return c.html(galleryPageHTML({ code, shareName: share.name, images, origin: new URL(c.req.url).origin, pwd }));
 });
 
 // ───── Public: Image Hotlink ─────
@@ -1384,6 +1397,7 @@ progress::-moz-progress-bar{background:#38bdf8;border-radius:4px}
 ${renderAd(p.ad)}
 </div>
 <script>
+let _pwd='';
 ${p.requiresPassword ? `
 async function verifyPassword(){
   const btn=document.getElementById('verify-btn');
@@ -1395,6 +1409,7 @@ async function verifyPassword(){
     const res=await fetch('/api/shares/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:pwd})});
     const data=await res.json();
     if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='确认';return}
+    _pwd=pwd;
     document.getElementById('pw-wrap').style.display='none';
     document.getElementById('action-wrap').style.display='block';
   }catch(e){
@@ -1411,7 +1426,8 @@ async function doDownload(){
   const txt=document.getElementById('progress-text');
   wrap.style.display='block';
   try{
-    const res=await fetch('${rawUrl}');
+    const dlUrl=_pwd ? '${rawUrl}?password='+encodeURIComponent(_pwd) : '${rawUrl}';
+    const res=await fetch(dlUrl);
     if(!res.ok){const e=await res.json().catch(()=>({error:'HTTP '+res.status}));txt.textContent='下载失败: '+(e.error||res.status);return}
     const cl=parseInt(res.headers.get('X-Total-Size')||res.headers.get('Content-Length')||'0',10);
     const reader=res.body.getReader();
@@ -1520,12 +1536,17 @@ async function verifyPassword(){
     const res=await fetch('/api/shares/folder/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:pwd})});
     const data=await res.json();
     if(!data.ok){err.textContent=data.error||'密码错误';err.style.display='block';btn.disabled=false;btn.textContent='确认';return}
-    showFiles(data.files||[], data.name);
+    showFiles(data.files||[], data.name, pwd);
   }catch(e){err.textContent='网络错误，请重试';err.style.display='block';btn.disabled=false;btn.textContent='确认'}
 }` : `
-async function init(){try{const r=await fetch('/api/shares/folder/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:''})});const d=await r.json();if(d.ok)showFiles(d.files||[], d.name)}catch(e){}}
+async function init(){try{const r=await fetch('/api/shares/folder/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'${p.code}',password:''})});const d=await r.json();if(d.ok)showFiles(d.files||[], d.name, '')}catch(e){}}
 init();`}
-function showFiles(files, folderName){
+function showFiles(files, folderName, pwd){
+  const pwdParam = pwd ? '?password=' + encodeURIComponent(pwd) : '';
+  if(pwd){
+    const gl=document.getElementById('gallery-link');
+    if(gl) gl.href='/dl/f/${p.code}/gallery?pwd=' + encodeURIComponent(pwd);
+  }
   const wrap=document.getElementById('content-wrap');wrap.style.display='block';
   const list=document.getElementById('file-list');list.innerHTML='';
   const hasImages=files.some(f=>/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name));
@@ -1543,7 +1564,7 @@ function showFiles(files, folderName){
       f.name.match(/\.(js|ts|py|go|rs|java)$/i)?'💻':'📄';
     const sz=fmt(f.size);
     const isImg=/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name);
-    const dlUrl='/dl/f/${p.code}/raw/'+f.id;
+    const dlUrl='/dl/f/${p.code}/raw/'+f.id + pwdParam;
     const hotlink='${p.origin}/img/${p.code}/'+f.id;
     const row=document.createElement('div');
     row.style.marginBottom='.35rem';
@@ -1566,7 +1587,7 @@ function fmt(b){if(!b||b<=0)return'0 B';const k=1024,s=['B','KB','MB','GB','TB']
 /**
  * Generate the image gallery page HTML — responsive grid with lightbox.
  */
-function galleryPageHTML(p: { code: string; shareName: string; images: any[]; origin: string; ad?: AdConfig }): string {
+function galleryPageHTML(p: { code: string; shareName: string; images: any[]; origin: string; ad?: AdConfig; pwd?: string }): string {
   const esc = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const name = esc(p.shareName);
 
@@ -1634,7 +1655,7 @@ ${p.images.length === 0 ? `
 <div class="gallery" id="gallery">
   ${p.images.map((img, idx) => {
     const imgUrl = `/img/${p.code}/${img.id}`;
-    const thumbUrl = `/dl/f/${p.code}/raw/${img.id}`; // proxy for thumbnail
+    const thumbUrl = '/dl/f/' + p.code + '/raw/' + img.id + (p.pwd ? '?password=' + encodeURIComponent(p.pwd) : ''); // proxy for thumbnail
     return `<div class="gallery-item" onclick="openLightbox(${idx})">
       <img src="${thumbUrl}" alt="${esc(img.name)}" loading="lazy">
       <div class="info">
@@ -1661,7 +1682,7 @@ const images = ${JSON.stringify(p.images.map(img => ({
     name: img.name,
     size: img.size,
     url: '/img/${p.code}/' + img.id,
-    thumbUrl: '/dl/f/${p.code}/raw/' + img.id,
+    thumbUrl: '/dl/f/${p.code}/raw/' + img.id + (p.pwd ? '?password=' + encodeURIComponent(p.pwd) : ''),
     hotlink: '${p.origin}/img/${p.code}/' + img.id,
   })))};
 let currentIdx = 0;

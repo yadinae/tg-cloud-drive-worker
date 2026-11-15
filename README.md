@@ -15,7 +15,7 @@
 - **URL 传输**：直接粘贴 URL 将文件从网络传输到云盘
 - **分块上传**：大文件浏览器端分块（每块 18MB），绕过 Bot API 限制
 - **音频播放器**：底部全局播放栏，支持队列/顺序/循环
-- **并发控制**：Bot API 调用限并发（默认 2），防止 429 限流
+- **并发控制**：Bot API 调用限并发（默认 5，`worker/src/bot.ts`），防止 429 限流
 
 ## 环境变量
 
@@ -25,7 +25,7 @@
 | `STORAGE_CHANNEL_ID` | ✅ | — | 存储频道/群组的数字 ID（如 `-1001234567890`）|
 | `DRIVE_AUTH_TOKEN` | ✅ | — | 前端登录用的 Bearer Token |
 | `TG_API_BASE_URL` | ❌ | `https://api.telegram.org` | 自定义 Bot API 服务器地址（自建 Bot API 可突破 2GB 上限）|
-| `TG_API_CONCURRENCY` | ❌ | `2` | Bot API 最大并发调用数 |
+| `TG_API_CONCURRENCY` | ❌ | `5` | Bot API 最大并发调用数 |
 
 ## 架构对比
 
@@ -107,7 +107,9 @@ bash deploy.sh
 | GET | `/` | 前端 SPA |
 | GET | `/api/health` | 健康检查 (验证 Bot + 频道) |
 | GET | `/api/stats` | 统计信息 (文件数/大小/话题数) |
-| POST | `/api/auth/verify` | 验证用户 Token |
+| POST | `/api/auth/login` | 密码换会话（7 天，存 KV `sess:`） |
+| POST | `/api/auth/logout` | 注销会话 |
+| GET | `/api/auth/session` | 校验会话是否有效 |
 | POST | `/api/shares/verify` | 验证分享密码 |
 | GET | `/dl/:code` | 分享下载页面 |
 | GET | `/dl/:code/raw` | 分享直链下载 |
@@ -178,12 +180,26 @@ bash deploy.sh
 | GET | `/api/admin/identify/:topicId` | 向话题发消息以确认 ID |
 | POST | `/api/admin/cleanup-orphans` | 清理所有孤立的上传分块 |
 
+#### 配置与批量（认证接口）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET / PUT | `/api/config` | 读取 / 批量更新 D1 `settings` 配置 |
+| POST | `/api/auth/change-password` | 修改登录密码（存 SHA-256 到 D1） |
+| POST | `/api/transfer/batch` | 批量从 URL 传输（最多 20 个） |
+| POST | `/api/files/batch/delete` | 批量删除文件（最多 50 个） |
+| POST | `/api/files/batch/move` | 批量移动文件 |
+
+> 另有 `/api/agent/*`（17 条，需 `AGENT_API_TOKEN`，见 `worker/src/agent-api.ts`）供 Hermes 集成使用；`GET /api/openapi.json` 与 `GET /api` 目前未挂载，`worker/src/openapi.ts` 为待挂载的规范文件。
+>
+> 安全说明：`/img/:code/:fileId` 图片直链有意公开（商品预览图需要热链），不校验分享口令；其余取回文件内容的出口（`/dl/:code/raw`、`/dl/f/:code/raw/:fileId`、`/api/files/:id/download`）均须校验口令或登录会话，详见 `notes/2026-07-31-raw-endpoint-bypasses-password.md`。
+
 ## 已知限制
 
 | 限制 | 说明 | 解决方案 |
 |:----|:-----|:---------|
 | **Bot API 下载限制 ~20MB** | `getFile` 方法无法返回 >20MB 文件的下载路径 | 前端分块上传（每块 ≤18MB），下载时 Worker 逐块拉取后流式拼接 |
-| **文件大小上限 ~2GB** | Bot API 的 sendDocument 限制 | 超过 50MB 的文件需要架设 [Local Bot API](https://core.telegram.org/bots/api#using-a-local-bot-api-server)，设置 `TG_API_BASE_URL` 环境变量 |
+| **文件大小上限 ~900MB（官方 Bot API）** | 分块硬上限 `MAX_CHUNK = 50` 块 × 18MB（`worker/src/storage.ts`） | 超过 900MB 请架设 [Local Bot API](https://core.telegram.org/bots/api#using-a-local-bot-api-server)，设置 `TG_API_BASE_URL` 环境变量，自建后才可能超过 2GB |
 
 > **自建 Bot API Server**：设置 `TG_API_BASE_URL` 后可绕过官方 API 的限制，直接上传/下载 >2GB 的文件，无需浏览器端分块。参见 [Telegram Bot API 自部署文档](https://github.com/tdlib/telegram-bot-api)。
 
