@@ -2,16 +2,7 @@ import type { Env, ShareResponse, ShareCreatePayload, ShareUpdatePayload, Folder
 import { getFile, listFilesInTree } from './metadata';
 import { getTelegramFilePath } from './bot';
 import { checkRateLimit, recordFailedAttempt, clearRateLimit, SHARE_RATE_LIMIT } from './rate-limit';
-
-// ───── SHA-256 helper ─────
-async function sha256(str: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(str);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
+import { hashPassword, verifyPasswordHash, encryptSharePassword, displaySharePassword, isEncryptedSharePassword } from './passwords';
 
 // ───── KV Key Prefixes ─────
 const SHARE_PREFIX = 'share:';
@@ -47,10 +38,15 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
 
   const now = Date.now();
 
-  // Hash password if provided
+  // Hash password if provided (PBKDF2, salted). The display copy is stored
+  // AES-GCM-encrypted when SHARE_PASSWORD_KEY is configured, so the admin
+  // eye icon keeps working without plaintext in KV; without a key there
+  // is no display copy (null) rather than a silent plaintext fallback.
   let passwordHash: string | null = null;
+  let displayPassword: string | null = null;
   if (password) {
-    passwordHash = await sha256(password);
+    passwordHash = await hashPassword(password);
+    displayPassword = await encryptSharePassword(env.SHARE_PASSWORD_KEY, password);
   }
 
   // Calculate expiration
@@ -64,7 +60,7 @@ export async function createShare(env: Env, payload: ShareCreatePayload): Promis
     fileName: file.name,
     fileSize: file.size,
     passwordHash,
-    password: password || null,
+    password: displayPassword,
     createdAt: now,
     downloadCount: 0,
     expiresAt,
@@ -117,7 +113,7 @@ export async function getShare(code: string, env: Env): Promise<{
       fileName: record.fileName,
       fileSize: record.fileSize,
       hasPassword: !!record.passwordHash,
-      password: record.password || null,
+      password: await displaySharePassword(env.SHARE_PASSWORD_KEY, record.password),
       expiresAt: record.expiresAt,
       downloadCount: record.downloadCount,
       maxDownloads: record.maxDownloads ?? null,
@@ -162,12 +158,22 @@ export async function verifySharePassword(
         return { ok: false, error: 'Too many attempts, please try again later', rateLimited: true, retryAfterSeconds: limit.retryAfterSeconds };
       }
     }
-    const hash = await sha256(password);
-    if (hash !== record.passwordHash) {
+    const result = await verifyPasswordHash(record.passwordHash, password);
+    if (!result.ok) {
       if (bucketKey) await recordFailedAttempt(env, bucketKey, SHARE_RATE_LIMIT.windowSeconds);
       return { ok: false, error: 'Invalid password' };
     }
     if (bucketKey) await clearRateLimit(env, bucketKey);
+    // Upgrade in place (piggybacked on the download-count write below):
+    // a legacy SHA-256 hash becomes PBKDF2, and a legacy plaintext display
+    // copy is re-encrypted when a key is configured.
+    if (result.legacy) {
+      record.passwordHash = await hashPassword(password);
+    }
+    if (record.password && !isEncryptedSharePassword(record.password)) {
+      const encrypted = await encryptSharePassword(env.SHARE_PASSWORD_KEY, record.password);
+      if (encrypted) record.password = encrypted;
+    }
   }
 
   // Check max downloads limit
@@ -222,7 +228,7 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
         fileName: record.fileName,
         fileSize: record.fileSize,
         hasPassword: !!record.passwordHash,
-        password: record.password || null,
+        password: await displaySharePassword(env.SHARE_PASSWORD_KEY, record.password),
         expiresAt: record.expiresAt,
         downloadCount: record.downloadCount || 0,
         maxDownloads: record.maxDownloads ?? null,
@@ -258,7 +264,7 @@ export async function listAllShares(env: Env, limit: number = 100, includePasswo
             hasPassword: !!record.passwordHash,
             // 管理后台列表需要显示/复制口令时才返回明文；默认不返回，
             // 避免 Agent API 等其他调用方顺带拿到明文口令。
-            password: includePassword ? (record.password || null) : null,
+            password: includePassword ? await displaySharePassword(env.SHARE_PASSWORD_KEY, record.password) : null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             maxDownloads: record.maxDownloads ?? null,
@@ -295,8 +301,8 @@ export async function updateShare(
   // Update password
   if (payload.password !== undefined) {
     if (payload.password) {
-      record.passwordHash = await sha256(payload.password);
-      record.password = payload.password;
+      record.passwordHash = await hashPassword(payload.password);
+      record.password = await encryptSharePassword(env.SHARE_PASSWORD_KEY, payload.password);
     } else {
       record.passwordHash = null;
       record.password = null;
@@ -378,8 +384,10 @@ export async function createFolderShare(
 
   const now = Date.now();
   let passwordHash: string | null = null;
+  let displayPassword: string | null = null;
   if (password) {
-    passwordHash = await sha256(password);
+    passwordHash = await hashPassword(password);
+    displayPassword = await encryptSharePassword(env.SHARE_PASSWORD_KEY, password);
   }
 
   let expiresAt: number | null = null;
@@ -392,7 +400,7 @@ export async function createFolderShare(
     folderId: folderId ?? null,
     name: '', // filled below
     passwordHash,
-    password: password || null,
+    password: displayPassword,
     createdAt: now,
     downloadCount: 0,
     expiresAt,
@@ -448,7 +456,7 @@ export async function getFolderShare(code: string, env: Env): Promise<{
       name: record.name,
       fileCount: record.fileCount,
       hasPassword: !!record.passwordHash,
-      password: record.password || null,
+      password: await displaySharePassword(env.SHARE_PASSWORD_KEY, record.password),
       expiresAt: record.expiresAt,
       downloadCount: record.downloadCount,
       maxDownloads: record.maxDownloads ?? null,
@@ -496,12 +504,22 @@ export async function verifyFolderSharePassword(
         return { ok: false, error: 'Too many attempts, please try again later', rateLimited: true, retryAfterSeconds: limit.retryAfterSeconds };
       }
     }
-    const hash = await sha256(password);
-    if (hash !== record.passwordHash) {
+    const result = await verifyPasswordHash(record.passwordHash, password);
+    if (!result.ok) {
       if (bucketKey) await recordFailedAttempt(env, bucketKey, SHARE_RATE_LIMIT.windowSeconds);
       return { ok: false, error: 'Invalid password' };
     }
     if (bucketKey) await clearRateLimit(env, bucketKey);
+    // Upgrade in place (piggybacked on the download-count write below):
+    // a legacy SHA-256 hash becomes PBKDF2, and a legacy plaintext display
+    // copy is re-encrypted when a key is configured.
+    if (result.legacy) {
+      record.passwordHash = await hashPassword(password);
+    }
+    if (record.password && !isEncryptedSharePassword(record.password)) {
+      const encrypted = await encryptSharePassword(env.SHARE_PASSWORD_KEY, record.password);
+      if (encrypted) record.password = encrypted;
+    }
   }
 
   // Check max downloads limit
@@ -557,7 +575,7 @@ export async function listAllFolderShares(env: Env, limit: number = 100, include
             hasPassword: !!record.passwordHash,
             // 管理后台列表需要显示/复制口令时才返回明文；默认不返回，
             // 避免 Agent API 等其他调用方顺带拿到明文口令。
-            password: includePassword ? (record.password || null) : null,
+            password: includePassword ? await displaySharePassword(env.SHARE_PASSWORD_KEY, record.password) : null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             maxDownloads: record.maxDownloads ?? null,
@@ -592,8 +610,8 @@ export async function updateFolderShare(
 
   if (payload.password !== undefined) {
     if (payload.password) {
-      record.passwordHash = await sha256(payload.password);
-      record.password = payload.password;
+      record.passwordHash = await hashPassword(payload.password);
+      record.password = await encryptSharePassword(env.SHARE_PASSWORD_KEY, payload.password);
     } else {
       record.passwordHash = null;
       record.password = null;

@@ -9,6 +9,9 @@ compatibility_flags = ["nodejs_compat"]
 # DRIVE_AUTH_TOKEN         — Bearer token for web app authentication
 # AGENT_API_TOKEN          — Bearer token for /api/agent/* (Hermes Agent integration)
 # AGENT_DEFAULT_TOPIC      — Default topic ID for agent uploads/transfers (optional, default: 20)
+# SHARE_PASSWORD_KEY       — base64url key (16/24/32 random bytes) for AES-GCM
+#                            encryption of share passwords shown in admin
+#                            (optional; without it new shares store no display copy)
 
 # === D1 — Metadata database ===
 [[d1_databases]]

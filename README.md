@@ -86,6 +86,9 @@ npx wrangler kv:namespace create "SHARES"
 npx wrangler secret put TG_BOT_TOKEN
 npx wrangler secret put STORAGE_CHANNEL_ID   # 频道/群组的数字 ID (如 -1001234567890)
 npx wrangler secret put DRIVE_AUTH_TOKEN     # 前端访问用的 Bearer Token
+# 分享口令眼睛图标用的加密密钥（可选）：生成 32 字节随机值并直接写入 secret
+node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))" | npx wrangler secret put SHARE_PASSWORD_KEY
+# 未设置时：新分享不存显示副本（眼睛图标看不到口令），旧分享的明文副本保持原样直到下次验证/改口令时重加密；口令校验不受影响。
 
 # 部署
 bash deploy.sh
