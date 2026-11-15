@@ -41,6 +41,7 @@ import { verifyBotConnection, deleteFileMessages, createForumTopic, renameForumT
 import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend-assets';
 import agentApi from './agent-api';
 import { apiIndex, openApiSpec } from './openapi';
+import { getClientIp, checkRateLimit, recordFailedAttempt, clearRateLimit, LOGIN_RATE_LIMIT } from './rate-limit';
 
 // ───── Auto-migrate D1 on cold start ─────
 async function ensureSchema(env: Env) {
@@ -243,11 +244,21 @@ app.post('/api/auth/login', async (c) => {
   const { password } = await c.req.json();
   if (!password) return c.json({ error: 'Password required' }, 400);
 
+  // Rate limit: 5 failed logins per IP per 15 min
+  const ip = getClientIp(c);
+  const loginKey = `login:${ip}`;
+  const limit = await checkRateLimit(c.env, loginKey, LOGIN_RATE_LIMIT.maxAttempts, LOGIN_RATE_LIMIT.windowSeconds);
+  if (!limit.allowed) {
+    return c.json({ error: 'Too many login attempts, please try again later' }, 429, { 'Retry-After': String(limit.retryAfterSeconds) });
+  }
+
   // Verify password against env var OR settings hash
   const valid = await checkPassword(c.env, password);
   if (!valid) {
+    await recordFailedAttempt(c.env, loginKey, LOGIN_RATE_LIMIT.windowSeconds);
     return c.json({ error: 'Invalid password' }, 403);
   }
+  await clearRateLimit(c.env, loginKey);
 
   // Create session
   const sessionId = crypto.randomUUID();
@@ -306,7 +317,10 @@ app.get('/api/stats', async (c) => {
 app.post('/api/shares/verify', async (c) => {
   const { code, password } = await c.req.json();
   if (!code) return c.json({ error: 'code required' }, 400);
-  const result = await verifySharePassword(code, password || '', c.env);
+  const result = await verifySharePassword(code, password || '', c.env, getClientIp(c));
+  if (result.rateLimited) {
+    return c.json({ error: result.error }, 429, { 'Retry-After': String(result.retryAfterSeconds ?? 60) });
+  }
   return c.json(result);
 });
 
@@ -314,7 +328,10 @@ app.post('/api/shares/verify', async (c) => {
 app.post('/api/shares/folder/verify', async (c) => {
   const { code, password } = await c.req.json();
   if (!code) return c.json({ error: 'code required' }, 400);
-  const result = await verifyFolderSharePassword(code, password || '', c.env);
+  const result = await verifyFolderSharePassword(code, password || '', c.env, getClientIp(c));
+  if (result.rateLimited) {
+    return c.json({ error: result.error }, 429, { 'Retry-After': String(result.retryAfterSeconds ?? 60) });
+  }
   return c.json(result);
 });
 
@@ -1057,7 +1074,10 @@ app.get('/dl/f/:code/raw/:fileId', async (c) => {
   if (share.hasPassword) {
     const url = new URL(c.req.url);
     const pw = url.searchParams.get('password') || '';
-    const result = await verifyFolderSharePassword(code, pw, c.env);
+    const result = await verifyFolderSharePassword(code, pw, c.env, getClientIp(c));
+    if (result.rateLimited) {
+      return c.json({ error: result.error }, 429, { 'Retry-After': String(result.retryAfterSeconds ?? 60) });
+    }
     if (!result.ok) {
       return c.json({ error: 'Password required' }, 403);
     }
@@ -1085,7 +1105,10 @@ app.get('/dl/f/:code/gallery', async (c) => {
   }
   // Verify password if needed
   if (share.hasPassword) {
-    const verify = await verifyFolderSharePassword(code, c.req.query('pwd') || '', c.env);
+    const verify = await verifyFolderSharePassword(code, c.req.query('pwd') || '', c.env, getClientIp(c));
+    if (verify.rateLimited) {
+      return new Response(`<html><body style="background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh"><div style="background:#1e293b;border-radius:12px;padding:2rem;text-align:center"><h1 style="color:#f87171">❌ ${verify.error}</h1><p>Please wait a while and try again.</p></div></body></html>`, { status: 429, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': String(verify.retryAfterSeconds ?? 60) } });
+    }
     if (!verify.ok) return c.html(`<html><body style="background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh"><div class="card" style="background:#1e293b;border-radius:12px;padding:2rem;text-align:center"><h1 style="color:#f87171">❌ ${verify.error}</h1><a href="/dl/f/${code}" style="color:#38bdf8">Back</a></div></body></html>`);
   }
   // Load files
@@ -1161,7 +1184,10 @@ app.get('/dl/:code/raw', async (c) => {
   if (share.hasPassword) {
     const url = new URL(c.req.url);
     const pw = url.searchParams.get('password') || '';
-    const result = await verifySharePassword(code, pw, c.env);
+    const result = await verifySharePassword(code, pw, c.env, getClientIp(c));
+    if (result.rateLimited) {
+      return c.json({ error: result.error }, 429, { 'Retry-After': String(result.retryAfterSeconds ?? 60) });
+    }
     if (!result.ok) {
       return c.json({ error: 'Password required' }, 403);
     }
