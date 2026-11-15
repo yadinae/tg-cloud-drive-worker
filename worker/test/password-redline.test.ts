@@ -12,7 +12,8 @@
  *     GET /dl/f/:code              文件夹分享页（同上）
  *     GET /dl/f/:code/gallery      文件夹画廊（有口令时须先过口令）
  *   有意公开的例外（必须保持公开，见 2026-07-31 笔记：产品预览图/外链）:
- *     GET /img/:code/:fileId       不校验口令，但仍校验文件属于该分享
+ *     GET /img/:code/:fileId       不校验口令，但仅限图片（MIME 或扩展名判定），
+ *                                 非图片 → 403；仍校验文件属于该分享
  *   管理员端点（走登录会话，不走分享口令）:
  *     GET /api/files/:id/download  无会话 → 401，有会话 → 200
  *
@@ -155,11 +156,32 @@ describe("文件夹画廊 GET /dl/f/:code/gallery", () => {
   });
 });
 
-describe("图片外链 GET /img/:code/:fileId（有意公开的例外）", () => {
-  it("有口令的分享、不带口令 → 仍返回图片（产品预览/外链，见 2026-07-31 笔记）", async () => {
-    const res = await SELF.fetch(`${BASE}/img/protfile/1`);
+describe("图片外链 GET /img/:code/:fileId（有意公开的例外，仅限图片）", () => {
+  it("图片文件、有口令的分享、不带口令 → 仍返回图片（产品预览/外链，见 2026-07-31 笔记）", async () => {
+    const res = await SELF.fetch(`${BASE}/img/protfold/2`);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(FILE_BODY);
+  });
+
+  it("图片文件、公开分享 → 200", async () => {
+    const res = await SELF.fetch(`${BASE}/img/openfold/2`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(FILE_BODY);
+  });
+
+  it("非图片文件、有口令的分享 → 403（/img 只服务图片，口令分享的 PDF/ZIP 不能从这里漏出去）", async () => {
+    const res = await SELF.fetch(`${BASE}/img/protfile/1`);
+    expect(res.status).toBe(403);
+  });
+
+  it("非图片文件、文件夹分享 → 403", async () => {
+    const res = await SELF.fetch(`${BASE}/img/protfold/1`);
+    expect(res.status).toBe(403);
+  });
+
+  it("非图片文件、公开分享 → 403（MIME 限制与口令无关）", async () => {
+    const res = await SELF.fetch(`${BASE}/img/openfile/1`);
+    expect(res.status).toBe(403);
   });
 
   it("文件不在该分享里 → 404（例外不绕过归属校验）", async () => {
