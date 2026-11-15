@@ -855,7 +855,8 @@ app.delete('/api/shares/:code', async (c) => {
 // GET /api/shares/list-all — list ALL shares across all files
 app.get('/api/shares/list-all', async (c) => {
   c.header('Cache-Control', 'no-store');
-  const shares = await listAllShares(c.env);
+  // 管理后台列表要显示/复制口令，返回明文口令（路由本身在 authMiddleware 之后，仅登录管理员可调）
+  const shares = await listAllShares(c.env, 100, true);
   return c.json({ shares });
 });
 
@@ -883,7 +884,8 @@ app.post('/api/shares/folder', async (c) => {
 // GET /api/shares/folder/list-all — list ALL folder shares
 app.get('/api/shares/folder/list-all', async (c) => {
   c.header('Cache-Control', 'no-store');
-  const shares = await listAllFolderShares(c.env);
+  // 管理后台列表要显示/复制口令，返回明文口令（路由本身在 authMiddleware 之后，仅登录管理员可调）
+  const shares = await listAllFolderShares(c.env, 100, true);
   return c.json({ shares });
 });
 
