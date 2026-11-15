@@ -1,6 +1,7 @@
 import type { Env, ShareResponse, ShareCreatePayload, ShareUpdatePayload, FolderShareCreatePayload, FolderShareUpdatePayload, FolderShareRecord, FolderShareResponse } from './types';
 import { getFile, listFilesInTree } from './metadata';
 import { getTelegramFilePath } from './bot';
+import { checkRateLimit, recordFailedAttempt, clearRateLimit, SHARE_RATE_LIMIT } from './rate-limit';
 
 // ───── SHA-256 helper ─────
 async function sha256(str: string): Promise<string> {
@@ -126,12 +127,17 @@ export async function getShare(code: string, env: Env): Promise<{
 
 /**
  * Verify share password and get download URL.
+ *
+ * Rate limiting (per IP + share code, only when a password is actually
+ * supplied): too many wrong guesses → { ok: false, rateLimited: true }.
+ * A correct password clears the bucket.
  */
 export async function verifySharePassword(
   code: string,
   password: string,
   env: Env,
-): Promise<{ ok: boolean; downloadUrl?: string; error?: string }> {
+  clientIp?: string,
+): Promise<{ ok: boolean; downloadUrl?: string; error?: string; rateLimited?: boolean; retryAfterSeconds?: number }> {
   const raw = await env.SHARES.get(`${SHARE_PREFIX}${code}`);
   if (!raw) {
     return { ok: false, error: 'Share link not found' };
@@ -146,10 +152,22 @@ export async function verifySharePassword(
 
   // Verify password
   if (record.passwordHash) {
-    const hash = await sha256(password);
-    if (hash !== record.passwordHash) {
+    if (!password) {
       return { ok: false, error: 'Invalid password' };
     }
+    const bucketKey = clientIp ? `share:${code}:${clientIp}` : null;
+    if (bucketKey) {
+      const limit = await checkRateLimit(env, bucketKey, SHARE_RATE_LIMIT.maxAttempts, SHARE_RATE_LIMIT.windowSeconds);
+      if (!limit.allowed) {
+        return { ok: false, error: 'Too many attempts, please try again later', rateLimited: true, retryAfterSeconds: limit.retryAfterSeconds };
+      }
+    }
+    const hash = await sha256(password);
+    if (hash !== record.passwordHash) {
+      if (bucketKey) await recordFailedAttempt(env, bucketKey, SHARE_RATE_LIMIT.windowSeconds);
+      return { ok: false, error: 'Invalid password' };
+    }
+    if (bucketKey) await clearRateLimit(env, bucketKey);
   }
 
   // Check max downloads limit
@@ -446,12 +464,15 @@ export async function verifyFolderSharePassword(
   code: string,
   password: string,
   env: Env,
+  clientIp?: string,
 ): Promise<{
   ok: boolean;
   files?: any[];
   name?: string;
   error?: string;
   fileCount?: number;
+  rateLimited?: boolean;
+  retryAfterSeconds?: number;
 }> {
   const raw = await env.SHARES.get(`${FOLDER_SHARE_PREFIX}${code}`);
   if (!raw) {
@@ -465,10 +486,22 @@ export async function verifyFolderSharePassword(
   }
 
   if (record.passwordHash) {
-    const hash = await sha256(password);
-    if (hash !== record.passwordHash) {
+    if (!password) {
       return { ok: false, error: 'Invalid password' };
     }
+    const bucketKey = clientIp ? `share:${code}:${clientIp}` : null;
+    if (bucketKey) {
+      const limit = await checkRateLimit(env, bucketKey, SHARE_RATE_LIMIT.maxAttempts, SHARE_RATE_LIMIT.windowSeconds);
+      if (!limit.allowed) {
+        return { ok: false, error: 'Too many attempts, please try again later', rateLimited: true, retryAfterSeconds: limit.retryAfterSeconds };
+      }
+    }
+    const hash = await sha256(password);
+    if (hash !== record.passwordHash) {
+      if (bucketKey) await recordFailedAttempt(env, bucketKey, SHARE_RATE_LIMIT.windowSeconds);
+      return { ok: false, error: 'Invalid password' };
+    }
+    if (bucketKey) await clearRateLimit(env, bucketKey);
   }
 
   // Check max downloads limit

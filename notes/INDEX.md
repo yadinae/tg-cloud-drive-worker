@@ -4,6 +4,7 @@
 
 | 日期 | 主题 | 类型 | 文件 |
 |---|---|---|---|
+| 2026-11-15 | 口令猜测加 IP 限流（登录 5/15 分钟，分享 10/10 分钟） | 安全 | [2026-11-15-password-rate-limit.md](2026-11-15-password-rate-limit.md) |
 | 2026-11-15 | CI 加上前端构建和嵌入步骤（部署永远用现 build 的产物） | CI | [2026-11-15-ci-frontend-build-embed.md](2026-11-15-ci-frontend-build-embed.md) |
 | 2026-11-15 | 口令校验红线自动化测试（Vitest + Miniflare，20 个用例） | 测试 | [2026-11-15-password-redline-tests.md](2026-11-15-password-redline-tests.md) |
 | 2026-11-15 | 清理 git 历史里的明文登录口令 | 安全 | [2026-11-15-history-purge-plaintext-password.md](2026-11-15-history-purge-plaintext-password.md) |
