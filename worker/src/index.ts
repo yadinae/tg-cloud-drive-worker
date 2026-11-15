@@ -21,6 +21,7 @@ import {
   listFilesInTree,
 } from './metadata';
 import { uploadCompleteFile, downloadFileStream, getShareDownloadUrl, receiveUploadChunk, finalizeChunkedUpload, transferFileByUrl, cleanupUploadChunks, cleanupAllOrphanUploads } from './storage';
+import { UrlBlockedError } from './ssrf';
 import {
   createShare,
   getShare,
@@ -693,6 +694,7 @@ app.post('/api/transfer', async (c) => {
     const result = await transferFileByUrl(c.env, url, topicId, folderId || null, fileName, mimeType);
     return c.json({ ok: true, ...result }, 201);
   } catch (err: any) {
+    if (err instanceof UrlBlockedError) return c.json({ error: err.message }, 400);
     return c.json({ error: err.message }, 500);
   }
 });

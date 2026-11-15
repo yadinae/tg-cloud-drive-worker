@@ -1,6 +1,7 @@
 import type { Env, ChunkInfo, UploadProgress } from './types';
 import { sendDocumentToChannel, streamFileFromTelegram, getTelegramFilePath, deleteTelegramMessage } from './bot';
 import { createFile, updateFileManifest, getFile } from './metadata';
+import { fetchPublicUrl, UrlBlockedError } from './ssrf';
 
 // ───── Constants ─────
 const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — under Bot API 20MB download limit
@@ -468,11 +469,13 @@ export async function transferFileByUrl(
 ): Promise<{ fileId: number; fileName: string; size: number }> {
   const MAX_SIZE = 100 * 1024 * 1024;
 
-  // Retry the initial fetch up to 3 times with backoff
+  // Retry the initial fetch up to 3 times with backoff.
+  // SSRF validation happens inside fetchPublicUrl; a blocked URL is a
+  // client error and is never retried.
   let res: Response | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      res = await fetchPublicUrl(url, { signal: AbortSignal.timeout(30000) });
       if (res.ok) break;
       if (attempt < 2 && res.status >= 500) {
         // Server error — retry
@@ -481,6 +484,7 @@ export async function transferFileByUrl(
       }
       throw new Error(`HTTP ${res.status}`);
     } catch (err: any) {
+      if (err instanceof UrlBlockedError) throw err;
       if (attempt === 2 || err.name === 'AbortError') {
         throw new Error(`Failed to fetch URL after 3 attempts: ${err.message}`);
       }
