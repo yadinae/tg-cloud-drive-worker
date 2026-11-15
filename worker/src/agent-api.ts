@@ -3,6 +3,7 @@ import type { Env } from './types';
 import { getStats, searchFiles, listFilesPaginated, getFile, listTopics, moveFile, getAndDeleteFile } from './metadata';
 import { createShare, listAllShares, updateShare, deleteShare } from './shares';
 import { uploadCompleteFile, transferFileByUrl } from './storage';
+import { UrlBlockedError } from './ssrf';
 import { deleteFileMessages } from './bot';
 
 // ───── Agent API ─────
@@ -304,6 +305,7 @@ app.post('/transfer', async (c) => {
       rawUrl: `${url.origin}/dl/${shareCode}/raw`,
     }, 201);
   } catch (err: any) {
+    if (err instanceof UrlBlockedError) return c.json({ error: err.message }, 400);
     return c.json({ error: err.message }, 500);
   }
 });
