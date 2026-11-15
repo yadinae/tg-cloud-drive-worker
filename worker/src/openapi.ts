@@ -19,7 +19,9 @@ export function apiIndex(reqUrl: URL) {
       { method: 'GET',    path: '/api/openapi.json',  description: 'Full OpenAPI 3.0 specification' },
       { method: 'GET',    path: '/api/health',        description: 'Service health check' },
       { method: 'GET',    path: '/api/stats',         description: 'Aggregate storage stats' },
-      { method: 'POST',   path: '/api/auth/verify',   description: 'Verify auth token [PUBLIC — no auth]' },
+      { method: 'POST',   path: '/api/auth/login',    description: 'Password to session (7 days) [PUBLIC — no auth]' },
+      { method: 'POST',   path: '/api/auth/logout',   description: 'Invalidate session [PUBLIC — no auth]' },
+      { method: 'GET',    path: '/api/auth/session',  description: 'Check session validity [PUBLIC — no auth]' },
       { method: 'POST',   path: '/api/shares/verify', description: 'Verify share password and get download URL [PUBLIC — no auth]' },
       { method: 'GET',    path: '/dl/:code',          description: 'Share download page [PUBLIC]' },
       { method: 'GET',    path: '/dl/:code/raw',      description: 'Share raw download [PUBLIC]' },
@@ -77,7 +79,7 @@ export function openApiSpec(baseUrl: string) {
       version: API_VERSION,
       description: `REST API for TG Cloud Drive — a file storage system backed by Telegram and Cloudflare.
 
-All endpoints except \`/api/shares/verify\` require authentication via \`Authorization: Bearer <token>\` header or \`?token=<token>\` query parameter.
+Public endpoints are \`/api/health\`, \`/api/stats\`, \`/api/auth/login\`, \`/api/auth/logout\`, \`/api/auth/session\`, \`/api/shares/verify\`, \`/api/shares/folder/verify\`, and the \`/dl/*\` / \`/img/*\` share pages; all other \`/api/*\` endpoints require authentication via \`Authorization: Bearer <token>\` header or \`?token=<token>\` query parameter.
 
 Files larger than 18MB are split into chunks before sending to Telegram. The chunked upload protocol:
 1. Send each chunk via \`POST /api/files/upload-chunk\` (multipart/form-data)
@@ -152,10 +154,10 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           },
         },
       },
-      '/api/auth/verify': {
+      '/api/auth/login': {
         post: {
-          summary: 'Verify auth token',
-          description: 'Public endpoint — no auth required. Verify that a Bearer token is valid.',
+          summary: 'Login with password',
+          description: 'Public endpoint — no auth required. Password to session (7 days).',
           tags: ['Public'],
           requestBody: {
             required: true,
@@ -163,16 +165,36 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
               'application/json': {
                 schema: {
                   type: 'object',
+                  required: ['password'],
                   properties: {
-                    token: { type: 'string', description: 'Auth token (passed via Authorization header)' },
+                    password: { type: 'string', description: 'Login password' },
                   },
                 },
               },
             },
           },
           responses: {
-            '200': { description: 'Token valid' },
-            '403': { description: 'Invalid token' },
+            '200': { description: 'Session created' },
+            '403': { description: 'Invalid password' },
+          },
+        },
+      },
+      '/api/auth/logout': {
+        post: {
+          summary: 'Logout',
+          description: 'Invalidate session.',
+          tags: ['Public'],
+          responses: { '200': { description: 'Logged out' } },
+        },
+      },
+      '/api/auth/session': {
+        get: {
+          summary: 'Check session',
+          description: 'Check if session is valid.',
+          tags: ['Public'],
+          responses: {
+            '200': { description: 'Session valid' },
+            '401': { description: 'Session invalid' },
           },
         },
       },
