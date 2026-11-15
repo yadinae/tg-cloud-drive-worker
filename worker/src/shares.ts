@@ -219,7 +219,7 @@ export async function listShares(env: Env, fileId: number): Promise<ShareRespons
 /**
  * List ALL shares across all files (with KV pagination).
  */
-export async function listAllShares(env: Env, limit: number = 100): Promise<ShareResponse[]> {
+export async function listAllShares(env: Env, limit: number = 100, includePassword: boolean = false): Promise<ShareResponse[]> {
   const shares: ShareResponse[] = [];
   try {
     let cursor: string | undefined;
@@ -238,7 +238,9 @@ export async function listAllShares(env: Env, limit: number = 100): Promise<Shar
             fileName: record.fileName,
             fileSize: record.fileSize,
             hasPassword: !!record.passwordHash,
-            password: null,
+            // 管理后台列表需要显示/复制口令时才返回明文；默认不返回，
+            // 避免 Agent API 等其他调用方顺带拿到明文口令。
+            password: includePassword ? (record.password || null) : null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             maxDownloads: record.maxDownloads ?? null,
@@ -498,7 +500,7 @@ export async function verifyFolderSharePassword(
 /**
  * List all folder shares.
  */
-export async function listAllFolderShares(env: Env, limit: number = 100): Promise<FolderShareResponse[]> {
+export async function listAllFolderShares(env: Env, limit: number = 100, includePassword: boolean = false): Promise<FolderShareResponse[]> {
   const shares: FolderShareResponse[] = [];
   try {
     let cursor: string | undefined;
@@ -520,7 +522,9 @@ export async function listAllFolderShares(env: Env, limit: number = 100): Promis
             name: record.name,
             fileCount: record.fileCount,
             hasPassword: !!record.passwordHash,
-            password: null,
+            // 管理后台列表需要显示/复制口令时才返回明文；默认不返回，
+            // 避免 Agent API 等其他调用方顺带拿到明文口令。
+            password: includePassword ? (record.password || null) : null,
             expiresAt: record.expiresAt,
             downloadCount: record.downloadCount || 0,
             maxDownloads: record.maxDownloads ?? null,
