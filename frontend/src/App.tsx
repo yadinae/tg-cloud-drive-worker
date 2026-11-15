@@ -599,6 +599,9 @@ function Dashboard() {
         fileName: fs.name || '(unnamed)',
         fileSize: fs.fileCount || 0,
         hasPassword: !!fs.hasPassword,
+        // 注意：这里是白名单映射，新增字段要显式加上，否则列表里读不到。
+        // 之前漏了 password，文件夹分享的眼睛图标只能显示 (hash only)。
+        password: fs.password || null,
         expiresAt: fs.expiresAt || null,
         downloadCount: fs.downloadCount || 0,
         createdAt: fs.createdAt || 0,
