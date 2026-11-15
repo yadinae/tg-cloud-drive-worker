@@ -190,7 +190,7 @@ bash deploy.sh
 | POST | `/api/files/batch/delete` | 批量删除文件（最多 50 个） |
 | POST | `/api/files/batch/move` | 批量移动文件 |
 
-> 另有 `/api/agent/*`（17 条，需 `AGENT_API_TOKEN`，见 `worker/src/agent-api.ts`）供 Hermes 集成使用；`GET /api/openapi.json` 与 `GET /api` 目前未挂载，`worker/src/openapi.ts` 为待挂载的规范文件。
+> 另有 `/api/agent/*`（17 条，需 `AGENT_API_TOKEN`，见 `worker/src/agent-api.ts`）供 Hermes 集成使用；`GET /api` 与 `GET /api/openapi.json` 为公开的接口发现端点（`worker/src/openapi.ts`），挂在鉴权中间件之前。
 >
 > 安全说明：`/img/:code/:fileId` 图片直链有意公开（商品预览图需要热链），不校验分享口令；其余取回文件内容的出口（`/dl/:code/raw`、`/dl/f/:code/raw/:fileId`、`/api/files/:id/download`）均须校验口令或登录会话，详见 `notes/2026-07-31-raw-endpoint-bypasses-password.md`。
 
