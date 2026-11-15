@@ -22,6 +22,10 @@ jobs:
         run: npm ci
         working-directory: worker
 
+      - name: Run tests
+        run: npm test
+        working-directory: worker
+
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
