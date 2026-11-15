@@ -26,6 +26,24 @@ jobs:
         run: npm test
         working-directory: worker
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: NODE_OPTIONS="--max-old-space-size=512" npm run build
+        working-directory: frontend
+
+      - name: Embed frontend assets into Worker
+        run: npx tsx scripts/embed-assets.ts
+        working-directory: worker
+
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
