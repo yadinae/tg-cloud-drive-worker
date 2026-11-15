@@ -23,6 +23,9 @@ export default defineConfig({
           STORAGE_CHANNEL_ID: "-1001234567890",
           DRIVE_AUTH_TOKEN: "test-admin-token",
           AGENT_API_TOKEN: "test-agent-token",
+          // Test-only AES-GCM key for the share-password display copy
+          // (see src/passwords.ts). 32 random bytes, base64url.
+          SHARE_PASSWORD_KEY: "fxO4F0JaGKN65Ttsyv-MqWfn78m0xfId8ssgAdlv7PU",
         },
       },
     }),

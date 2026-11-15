@@ -11,6 +11,7 @@
 | 2026-11-15 | 补齐 OpenAPI 规范并挂载接口发现端点 | 文档/实现 | [2026-11-15-openapi-complete-mount.md](2026-11-15-openapi-complete-mount.md) |
 | 2026-11-15 | URL 直传加 SSRF 拦截（P1） | 安全 | [2026-11-15-url-transfer-ssrf-block-fix.md](2026-11-15-url-transfer-ssrf-block-fix.md) |
 | 2026-11-15 | 文件夹分享页验证成功后确认按钮卡在“验证中...” | Bug 修复 | [2026-11-15-folder-share-verify-button-stuck-fix.md](2026-11-15-folder-share-verify-button-stuck-fix.md) |
+| 2026-11-15 | 口令存储加固：登录与分享口令改 PBKDF2，分享显示副本改 AES-GCM 加密 | 安全 | [2026-11-15-password-storage-hardening.md](2026-11-15-password-storage-hardening.md) |
 | 2026-11-15 | /img 外链限制为仅图片：非图片文件不再无口令可取 | 安全 | [2026-11-15-img-image-only.md](2026-11-15-img-image-only.md) |
 | 2026-11-15 | 文件夹分享眼睛图标仍显示“hash only”，前端白名单映射丢了口令 | Bug 修复 | [2026-11-15-folder-share-password-frontend-mapping-fix.md](2026-11-15-folder-share-password-frontend-mapping-fix.md) |
 | 2026-11-15 | 分享列表眼睛图标只显示“hash only”，看不到真实口令 | Bug 修复 | [2026-11-15-share-list-password-hash-only-fix.md](2026-11-15-share-list-password-hash-only-fix.md) |

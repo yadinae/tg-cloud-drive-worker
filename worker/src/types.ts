@@ -23,6 +23,13 @@ export interface Env {
   /** Optional: min age (hours) before the scheduled sweeper deletes orphan
    *  upload chunks. Protects in-progress uploads. Default: 2. */
   ORPHAN_MIN_AGE_HOURS?: string;
+  /** Optional: base64url of a 16/24/32-byte key (AES-GCM) used to encrypt
+   *  the share-password display copy stored in KV, so the admin eye icon
+   *  keeps working without storing plaintext. Set via wrangler secret;
+   *  without it, new shares store no display copy (eye icon shows nothing)
+   *  and legacy plaintext copies stay as-is until re-encrypted on the
+   *  next successful verification/update. */
+  SHARE_PASSWORD_KEY?: string;
 }
 
 // ───── D1 Row Types ─────

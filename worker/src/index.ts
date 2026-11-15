@@ -42,6 +42,7 @@ import { FRONTEND_HTML, FRONTEND_JS_NAME, FRONTEND_JS_CONTENT } from './frontend
 import agentApi from './agent-api';
 import { apiIndex, openApiSpec } from './openapi';
 import { getClientIp, checkRateLimit, recordFailedAttempt, clearRateLimit, LOGIN_RATE_LIMIT } from './rate-limit';
+import { hashPassword, verifyPasswordHash } from './passwords';
 
 // ───── Auto-migrate D1 on cold start ─────
 async function ensureSchema(env: Env) {
@@ -94,7 +95,7 @@ async function ensureSchema(env: Env) {
           ['bot.api_base_url', '',                '自定义 Bot API 地址'],
           ['system.auto_cleanup_days', '0',       '自动清理天数(0=关)'],
           ['system.session_timeout_days', '7',    '会话过期天数'],
-        ['system.password_hash', '',             '用户可修改的登录密码(SHA-256)'],
+        ['system.password_hash', '',             '用户可修改的登录密码(PBKDF2-SHA256)'],
           // ───── 商城广告配置 ─────
           ['ads.enabled', 'false',               '分享页是否显示商城广告'],
           ['ads.shop_name', '我们的商城',          '商城名称'],
@@ -168,13 +169,8 @@ app.use('*', cors({
 }));
 
 // ───── Auth middleware (supports session, env token, and settings password) ─────
-async function sha256(str: string): Promise<string> {
-  const data = new TextEncoder().encode(str);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** Check password against env var OR settings table hash */
+/** Check password against env var OR settings table hash (PBKDF2, or legacy
+ *  SHA-256 upgraded in place on success). */
 async function checkPassword(env: Env, password: string): Promise<boolean> {
   // 1. Check against env DRIVE_AUTH_TOKEN
   const tokenBytes = new TextEncoder().encode(password);
@@ -188,8 +184,17 @@ async function checkPassword(env: Env, password: string): Promise<boolean> {
   try {
     const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'system.password_hash'").first<{value: string}>();
     if (row && row.value) {
-      const hash = await sha256(password);
-      if (hash === row.value) return true;
+      const result = await verifyPasswordHash(row.value, password);
+      if (!result.ok) return false;
+      if (result.legacy) {
+        // Upgrade the stored hash to PBKDF2 (best-effort; login succeeds
+        // even if the upgrade write fails).
+        try {
+          const upgraded = await hashPassword(password);
+          await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'system.password_hash'").bind(upgraded).run();
+        } catch { /* ignore upgrade failure */ }
+      }
+      return true;
     }
   } catch { /* settings table may not exist yet */ }
   return false;
@@ -401,7 +406,7 @@ app.put('/api/config', async (c) => {
   return c.json({ ok: true });
 });
 
-// POST /api/auth/change-password — 修改密码（存储 SHA-256 哈希到 settings 表）
+// POST /api/auth/change-password — 修改密码（存储 PBKDF2 哈希到 settings 表）
 app.post('/api/auth/change-password', async (c) => {
   const { oldPassword, newPassword } = await c.req.json();
   if (!oldPassword || !newPassword) {
@@ -415,10 +420,10 @@ app.post('/api/auth/change-password', async (c) => {
   if (!valid) return c.json({ error: '当前密码错误' }, 403);
 
   // Hash new password and store in settings table
-  const hash = await sha256(newPassword);
+  const hash = await hashPassword(newPassword);
   await c.env.DB.prepare(
     "INSERT OR REPLACE INTO settings (key, value, description, updated_at) VALUES ('system.password_hash', ?, ?, ?)"
-  ).bind(hash, '用户可修改的登录密码(SHA-256)', Math.floor(Date.now() / 1000)).run();
+  ).bind(hash, '用户可修改的登录密码(PBKDF2-SHA256)', Math.floor(Date.now() / 1000)).run();
 
   // Also invalidate all existing sessions so user must re-login
   // (Sessions expire naturally based on TTL; no bulk delete in KV)
