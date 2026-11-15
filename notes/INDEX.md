@@ -4,6 +4,7 @@
 
 | 日期 | 主题 | 类型 | 文件 |
 |---|---|---|---|
+| 2026-11-15 | 文件夹分享眼睛图标仍显示“hash only”，前端白名单映射丢了口令 | Bug 修复 | [2026-11-15-folder-share-password-frontend-mapping-fix.md](2026-11-15-folder-share-password-frontend-mapping-fix.md) |
 | 2026-11-15 | 分享列表眼睛图标只显示“hash only”，看不到真实口令 | Bug 修复 | [2026-11-15-share-list-password-hash-only-fix.md](2026-11-15-share-list-password-hash-only-fix.md) |
 | 2026-11-15 | 文件夹分享 raw 直链绕过分享口令（同类复发） | 安全/踩坑 | [2026-11-15-folder-share-raw-password-bypass-fix.md](2026-11-15-folder-share-raw-password-bypass-fix.md) |
 | 2026-11-07 | 手动清理孤儿文件按钮 + 前端 JSX/TS 修复上线 | 实现 / 踩坑排查 / 部署 | [2026-11-07-manual-cleanup-orphans-frontend-fix.md](2026-11-07-manual-cleanup-orphans-frontend-fix.md) |
