@@ -1,14 +1,24 @@
-// ───── ClickHouse-inspired Design Tokens ─────
+// ───── TG Cloud Drive — Design Tokens ─────
+// Single source of truth for colour, radius, type and motion. The same
+// values are declared as CSS custom properties in ./tokens.css (injected
+// from main.tsx); components should prefer `var(--…)` so a theme switch
+// needs no JS change. The `c` / `r` / `s` objects below exist for the few
+// places that must compute a colour in JS (e.g. expiry labels).
+//
+// Design direction follows the unslop ruleset by Damir Sokolovsky:
+// https://github.com/heydamir/unslop — calm, exact, a little warm;
+// paper / archive / mailroom world; one accent, quiet chrome.
 
 export const c = {
-  // Canvas
-  canvas: '#0a0a0a',
-  surfaceSoft: '#121212',
-  surfaceCard: '#1a1a1a',
-  surfaceElevated: '#242424',
-  hairline: '#2a2a2a',
+  // Canvas — dark graphite ramp (admin surface)
+  canvas: 'var(--page)',
+  surfaceSoft: 'var(--soft)',
+  surfaceCard: 'var(--card)',
+  surfaceElevated: 'var(--raised)',
+  hairline: 'var(--hairline)',
+  hairlineStrong: 'var(--hairline-strong)',
 
-  // Brand — electric yellow
+  // Brand — electric yellow, the only accent
   primary: '#faff69',
   primaryActive: '#e6eb52',
   primaryDisabled: '#3a3a1f',
@@ -16,17 +26,17 @@ export const c = {
   primaryGlow: 'rgba(250, 255, 105, 0.08)',
 
   // Text
-  onDark: '#ffffff',
-  body: '#cccccc',
-  muted: '#888888',
+  onDark: '#ededed',
+  body: '#a1a1a6',
+  muted: '#85858b',
   mutedSoft: '#5a5a5a',
 
   // Semantic
-  danger: '#f87171',
-  dangerBg: 'rgba(248, 113, 113, 0.1)',
-  success: '#4ade80',
+  danger: '#e5484d',
+  dangerBg: 'rgba(229, 72, 77, 0.1)',
+  success: '#4cc38a',
   warning: '#fbbf24',
-};
+} as const;
 
 export const r = {
   sm: 4,
@@ -34,102 +44,32 @@ export const r = {
   lg: 12,
   xl: 16,
   round: 9999,
-};
+} as const;
 
 export const s = {
   font: "'Inter', system-ui, -apple-system, sans-serif",
   fontMono: "'JetBrains Mono', 'Fira Code', monospace",
-  transition: '150ms ease',
+  transition: '150ms cubic-bezier(0.22, 1, 0.36, 1)',
+  ease: 'cubic-bezier(0.22, 1, 0.36, 1)',
   shadow: '0 4px 24px rgba(0,0,0,.5)',
-};
+} as const;
 
-// Shared inline style objects for reuse
-export const st = {
-  input: {
-    padding: '.6rem .75rem',
-    borderRadius: r.md,
-    border: `1px solid ${c.hairline}`,
-    background: c.surfaceSoft,
-    color: c.body,
-    fontSize: '.875rem',
-    outline: 'none',
-    boxSizing: 'border-box' as const,
-    transition: 'border-color 150ms ease',
-  },
-  inputFocus: {
-    borderColor: c.primary,
-  },
-  select: {
-    padding: '.6rem .75rem',
-    borderRadius: r.md,
-    border: `1px solid ${c.hairline}`,
-    background: c.surfaceSoft,
-    color: c.body,
-    fontSize: '.875rem',
-    outline: 'none',
-    cursor: 'pointer' as const,
-    boxSizing: 'border-box' as const,
-  },
-  btnPrimary: {
-    padding: '.5rem 1rem',
-    borderRadius: r.md,
-    border: 'none',
-    background: c.primary,
-    color: '#0a0a0a',
-    fontWeight: 600 as const,
-    cursor: 'pointer' as const,
-    fontSize: '.875rem',
-    transition: s.transition,
-  },
-  btnSecondary: {
-    padding: '.5rem 1rem',
-    borderRadius: r.md,
-    border: `1px solid ${c.hairline}`,
-    background: c.surfaceCard,
-    color: c.body,
-    cursor: 'pointer' as const,
-    fontSize: '.875rem',
-    transition: s.transition,
-  },
-  btnSmall: {
-    padding: '.35rem .55rem',
-    borderRadius: r.sm,
-    border: 'none',
-    background: c.surfaceElevated,
-    color: c.muted,
-    cursor: 'pointer' as const,
-    fontSize: '.75rem',
-    transition: s.transition,
-  },
-  card: {
-    background: c.surfaceCard,
-    borderRadius: r.lg,
-    border: `1px solid ${c.hairline}`,
-  },
-  modalOverlay: {
-    position: 'fixed' as const,
-    inset: 0,
-    background: 'rgba(0,0,0,0.7)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
-  modalContent: {
-    background: c.surfaceElevated,
-    borderRadius: r.lg,
-    border: `1px solid ${c.hairline}`,
-    padding: '1.5rem',
-    maxHeight: '80vh',
-    overflow: 'auto' as const,
-  },
-  label: {
-    display: 'block',
-    fontSize: '.75rem',
-    color: c.muted,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '.08em',
-    fontWeight: 600 as const,
-    marginBottom: '.5rem',
-  },
-};
+/** CSS variable names, for components that build var() references in JS. */
+export const v = {
+  page: 'var(--page)',
+  card: 'var(--card)',
+  raised: 'var(--raised)',
+  soft: 'var(--soft)',
+  hairline: 'var(--hairline)',
+  hairlineStrong: 'var(--hairline-strong)',
+  text: 'var(--text)',
+  textSecondary: 'var(--text-secondary)',
+  textMuted: 'var(--text-muted)',
+  textFaint: 'var(--text-faint)',
+  accent: 'var(--accent)',
+  accentInk: 'var(--accent-ink)',
+  accentSoft: 'var(--accent-soft)',
+  success: 'var(--success)',
+  danger: 'var(--danger)',
+  warning: 'var(--warning)',
+} as const;
