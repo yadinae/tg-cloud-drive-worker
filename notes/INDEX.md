@@ -4,6 +4,7 @@
 
 | 日期 | 主题 | 类型 | 文件 |
 |---|---|---|---|
+| 2026-11-18 | 拆分 worker/src/index.ts（1,790 行 → 87 行，纯搬移零行为变化） | 重构 | [2026-11-18-split-index-ts.md](2026-11-18-split-index-ts.md) |
 | 2026-11-18 | 多块文件下载支持 Range（断点续传、分块并行） | 实现 | [2026-11-18-range-support.md](2026-11-18-range-support.md) |
 | 2026-11-15 | 口令猜测加 IP 限流（登录 5/15 分钟，分享 10/10 分钟） | 安全 | [2026-11-15-password-rate-limit.md](2026-11-15-password-rate-limit.md) |
 | 2026-11-15 | CI 加上前端构建和嵌入步骤（部署永远用现 build 的产物） | CI | [2026-11-15-ci-frontend-build-embed.md](2026-11-15-ci-frontend-build-embed.md) |
