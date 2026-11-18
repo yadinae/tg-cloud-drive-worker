@@ -717,6 +717,7 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           responses: {
             '200': { description: 'File stream' },
             '206': { description: 'Partial content' },
+            '416': { description: 'Requested range not satisfiable' },
           },
         },
       },
@@ -1287,6 +1288,7 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           responses: {
             '200': { description: 'File stream' },
             '206': { description: 'Partial content' },
+            '416': { description: 'Requested range not satisfiable' },
             '403': { description: 'Password required or incorrect' },
             '404': { description: 'Share link not found' },
           },
@@ -1319,6 +1321,7 @@ For agent-to-agent usage: start at \`GET /api\` to discover all endpoints, then 
           responses: {
             '200': { description: 'File stream' },
             '206': { description: 'Partial content' },
+            '416': { description: 'Requested range not satisfiable' },
             '403': { description: 'Password required or incorrect' },
             '404': { description: 'Share link not found, or file not in this share' },
           },
