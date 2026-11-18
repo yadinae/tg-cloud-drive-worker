@@ -2,6 +2,7 @@ import type { Env, ChunkInfo, UploadProgress } from './types';
 import { sendDocumentToChannel, streamFileFromTelegram, getTelegramFilePath, deleteTelegramMessage } from './bot';
 import { createFile, updateFileManifest, getFile } from './metadata';
 import { fetchPublicUrl, UrlBlockedError } from './ssrf';
+import { parseRangeHeader } from './range';
 
 // ───── Constants ─────
 const CHUNK_SIZE = 18 * 1024 * 1024; // 18MB per chunk — under Bot API 20MB download limit
@@ -150,12 +151,36 @@ export async function downloadFileStream(
   }
 
   const manifest: ChunkInfo[] = JSON.parse(fileRecord.manifest);
+
+  // ─── Range handling (single + multi-chunk) ───
+  // The OpenAPI spec already promises Range support on all three download
+  // endpoints; multi-chunk files used to warn-and-ignore it instead.
+  const totalSize = fileRecord.size;
+  const parsed = parseRangeHeader(range, totalSize);
+  if (parsed.kind === 'unsatisfiable') {
+    return new Response(JSON.stringify({ error: 'Requested range not satisfiable' }), {
+      status: 416,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Range': `bytes */${totalSize}`,
+        'Accept-Ranges': 'bytes',
+      },
+    });
+  }
+  const isRanged = parsed.kind === 'range';
+  const rangeStart = isRanged ? parsed.start : 0;
+  const rangeEnd = isRanged ? parsed.end : totalSize - 1;
+
   // ─── Single chunk: proxy through Worker — always proxy for reliability (no CDN CORS issues) ───
   if (manifest.length === 1) {
+    // Pass the normalized range to Telegram (suffix / open-ended forms are
+    // resolved to absolute bounds above). If Telegram ignores it and returns
+    // 200, the full chunk goes back — allowed by RFC 9110 §14.2.
+    const tgRange = isRanged ? `bytes=${rangeStart}-${rangeEnd}` : undefined;
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await streamFileFromTelegram(env, manifest[0].file_id, range);
+        const res = await streamFileFromTelegram(env, manifest[0].file_id, tgRange);
         const singleHeaders = new Headers({
           'Content-Type': fileRecord.mime_type,
           'Content-Disposition': 'inline',
@@ -165,7 +190,7 @@ export async function downloadFileStream(
         // Passthrough Content-Length from Telegram (passthrough body, no buffering)
         const tgCL = res.headers.get('Content-Length');
         if (tgCL) singleHeaders.set('Content-Length', tgCL);
-        if (range && res.headers.get('Content-Range')) {
+        if (isRanged && res.headers.get('Content-Range')) {
           singleHeaders.set('Content-Range', res.headers.get('Content-Range')!);
         }
         return new Response(res.body, { status: res.status, headers: singleHeaders });
@@ -181,8 +206,22 @@ export async function downloadFileStream(
   }
 
   // ─── Multi-chunk: parallel fetch (max 3), ordered write ───
-  if (range) {
-    console.warn('Range requests not yet supported for multi-chunk files');
+  // Byte offset of each chunk within the file (from manifest sizes).
+  // A Range only fetches the chunks it overlaps — the rest are never
+  // pulled from Telegram.
+  const offsets: number[] = [];
+  let offsetAcc = 0;
+  for (const c of manifest) {
+    offsets.push(offsetAcc);
+    offsetAcc += c.size;
+  }
+  let firstIdx = 0;
+  let lastIdx = manifest.length - 1;
+  if (isRanged) {
+    const first = manifest.findIndex((c, i) => offsets[i] + c.size > rangeStart);
+    const last = manifest.findIndex((c, i) => offsets[i] + c.size > rangeEnd);
+    firstIdx = first === -1 ? manifest.length - 1 : first;
+    lastIdx = last === -1 ? manifest.length - 1 : last;
   }
 
   // Check Bot API download limit
@@ -201,8 +240,8 @@ export async function downloadFileStream(
     try {
       // Buffer for out-of-order chunks (index → Uint8Array)
       const buffer = new Array<Uint8Array | null>(manifest.length).fill(null);
-      let nextIdx = 0;          // Next chunk index to write
-      let nextFetchIdx = 0;     // Next chunk index to start fetching
+      let nextIdx = firstIdx;     // Next chunk index to write
+      let nextFetchIdx = firstIdx; // Next chunk index to start fetching
       let inFlight = 0;         // Currently fetching
       const MAX_PARALLEL = 3;
 
@@ -225,7 +264,12 @@ export async function downloadFileStream(
             const merged = new Uint8Array(total);
             let offset = 0;
             for (const p of parts) { merged.set(p, offset); offset += p.length; }
-            buffer[idx] = merged;
+            // Slice to the requested byte window (the whole chunk when no
+            // Range was given). subarray clamps, so a short chunk can't
+            // overrun the window.
+            const winStart = Math.max(0, rangeStart - offsets[idx]);
+            const winEnd = Math.min(merged.length, rangeEnd - offsets[idx] + 1);
+            buffer[idx] = merged.subarray(winStart, Math.max(winStart, winEnd));
             return;
           } catch (err: any) {
             if (attempt === 2) throw new Error(`Chunk ${idx} failed: ${err.message}`);
@@ -247,13 +291,13 @@ export async function downloadFileStream(
       }
 
       // Main loop: keep filling up to MAX_PARALLEL, write when ordered
-      while (nextIdx < manifest.length && !streamError) {
+      while (nextIdx <= lastIdx && !streamError) {
         // Launch new fetches
-        while (inFlight < MAX_PARALLEL && nextFetchIdx < manifest.length) {
+        while (inFlight < MAX_PARALLEL && nextFetchIdx <= lastIdx) {
           startFetch(nextFetchIdx++);
         }
         // If the next chunk is ready, write it (and any subsequent ready chunks)
-        while (nextIdx < manifest.length && buffer[nextIdx] !== null && !streamError) {
+        while (nextIdx <= lastIdx && buffer[nextIdx] !== null && !streamError) {
           await writer.write(buffer[nextIdx]!);
           buffer[nextIdx] = null;
           nextIdx++;
@@ -276,14 +320,19 @@ export async function downloadFileStream(
     await writer.close();
   })();
 
+  const multiHeaders = new Headers({
+    'Content-Type': fileRecord.mime_type,
+    'Content-Disposition': 'inline',
+    'X-Total-Size': String(fileRecord.size),
+    'Accept-Ranges': 'bytes',
+  });
+  if (isRanged) {
+    multiHeaders.set('Content-Range', `bytes ${rangeStart}-${rangeEnd}/${totalSize}`);
+    multiHeaders.set('Content-Length', String(rangeEnd - rangeStart + 1));
+  }
   return new Response(readable, {
-    status: 200,
-    headers: {
-      'Content-Type': fileRecord.mime_type,
-      'Content-Disposition': 'inline',
-      'X-Total-Size': String(fileRecord.size),
-      'Accept-Ranges': 'bytes',
-    },
+    status: isRanged ? 206 : 200,
+    headers: multiHeaders,
   });
 }
 
